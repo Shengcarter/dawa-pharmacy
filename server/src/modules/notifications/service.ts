@@ -118,7 +118,7 @@ export async function refreshExpiryAlerts(branchId: number) {
         type: 'expired', severity: 'critical', dedupeKey: `${base}expired`,
         title: `${r.expired_batches} expired batch${r.expired_batches === 1 ? '' : 'es'} on the shelf`,
         message: `Stock worth ${formatMoney(r.expired_value, cur)} has expired. It is blocked from sale; dispose of it and record the write-off.`,
-        link: '/inventory/expiry?bucket=expired', audiencePermission: 'inventory.view',
+        link: '/inventory/expiry?expiry=expired', audiencePermission: 'inventory.view',
       });
     }
     if (r.soon_batches > 0) {
@@ -127,7 +127,7 @@ export async function refreshExpiryAlerts(branchId: number) {
         type: 'expiring', severity: 'warning', dedupeKey: `${base}d30`,
         title: `${r.soon_batches} batch${r.soon_batches === 1 ? ' expires' : 'es expire'} within 30 days`,
         message: `${formatMoney(r.soon_value, cur)} of stock at risk. Sell first, return to supplier, or plan disposal.`,
-        link: '/inventory/expiry?bucket=d30', audiencePermission: 'inventory.view',
+        link: '/inventory/expiry?expiry=d30', audiencePermission: 'inventory.view',
       });
     }
     if (r.later_batches > 0) {
@@ -136,7 +136,7 @@ export async function refreshExpiryAlerts(branchId: number) {
         type: 'expiring', severity: 'info', dedupeKey: `${base}warn`,
         title: `${r.later_batches} batch${r.later_batches === 1 ? ' expires' : 'es expire'} within ${settings.inventory.expiryWarningDays} days`,
         message: `${formatMoney(r.later_value, cur)} of stock approaching expiry.`,
-        link: '/inventory/expiry?bucket=all_risk', audiencePermission: 'inventory.view',
+        link: '/inventory/expiry?expiry=all_risk', audiencePermission: 'inventory.view',
       });
     }
   }

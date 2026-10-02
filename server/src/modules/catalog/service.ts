@@ -51,7 +51,7 @@ export async function listProducts(actor: Actor, q: ListQuery) {
   const { limit, offset } = pageParams(q.page, q.pageSize);
   const { rows } = await pool.query(
     `SELECT p.id, p.sku, p.barcode, p.name, p.generic_name, p.brand_name, p.product_type, p.strength, p.dosage_form, p.unit,
-            p.pack_size, p.purchase_price, p.selling_price, p.reorder_level, p.requires_prescription, p.status, p.tax_rate,
+            p.pack_size, p.purchase_price, p.selling_price, p.reorder_level, p.requires_prescription, p.is_batch_tracked, p.status, p.tax_rate,
             p.image_path, p.updated_at, c.id AS category_id, c.name AS category_name, m.name AS manufacturer_name,
             s.on_hand, s.sellable, s.stock_value, s.nearest_expiry, s.batch_count, ${status} AS stock_status,
             count(*) OVER() AS total_count

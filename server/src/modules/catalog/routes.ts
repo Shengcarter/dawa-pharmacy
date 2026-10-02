@@ -7,6 +7,7 @@ import { actorOf, requirePermission } from '../../middleware/auth';
 import { badRequest } from '../../lib/errors';
 import { PUBLIC_DIR, productImageUpload, relativePublicPath, removeStoredFile } from '../../lib/uploads';
 import { pool } from '../../db/pool';
+import { sendCsv } from '../../lib/csv';
 import * as catalog from './service';
 
 const idParam = (v: unknown) => z.coerce.number().int().positive().parse(v);
@@ -18,7 +19,30 @@ const skuInput = z.object({
 export const productsRouter = Router();
 
 productsRouter.get('/', requirePermission('products.view'), async (req, res) => {
-  res.json(await catalog.listProducts(actorOf(req), productListQuery.parse(req.query)));
+  const q = productListQuery.parse(req.query);
+  if (req.query.format === 'csv') {
+    const result = await catalog.listProducts(actorOf(req), { ...q, page: 1, pageSize: 100_000 });
+    const showCost = actorOf(req).permissions.has('products.manage') || actorOf(req).permissions.has('reports.financial');
+    sendCsv(res, 'products.csv', [
+      { header: 'SKU', value: (r) => r.sku },
+      { header: 'Barcode', value: (r) => r.barcode },
+      { header: 'Product', value: (r) => r.name },
+      { header: 'Generic name', value: (r) => r.generic_name },
+      { header: 'Category', value: (r) => r.category_name },
+      { header: 'Type', value: (r) => r.product_type },
+      { header: 'Unit', value: (r) => r.unit },
+      { header: 'Sellable stock', value: (r) => r.sellable },
+      { header: 'Reorder level', value: (r) => r.reorder_level },
+      ...(showCost ? [{ header: 'Purchase price', value: (r: Record<string, unknown>) => r.purchase_price }] : []),
+      { header: 'Selling price', value: (r) => r.selling_price },
+      { header: 'Nearest expiry', value: (r) => r.nearest_expiry },
+      { header: 'Stock status', value: (r) => r.stock_status },
+      { header: 'Prescription only', value: (r) => (r.requires_prescription ? 'Yes' : 'No') },
+      { header: 'Status', value: (r) => r.status },
+    ], result.data as Record<string, unknown>[]);
+    return;
+  }
+  res.json(await catalog.listProducts(actorOf(req), q));
 });
 
 productsRouter.get('/pos-search', requirePermission('pos.sell', 'prescriptions.manage'), async (req, res) => {

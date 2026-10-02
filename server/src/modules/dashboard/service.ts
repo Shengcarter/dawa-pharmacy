@@ -33,7 +33,9 @@ export async function dashboard(actor: Actor, period: DashboardPeriod) {
             COALESCE(sum(si.net), 0) AS net, COALESCE(sum(s.cost_total), 0) AS cost
        FROM sales s
        LEFT JOIN LATERAL (SELECT sum(net_amount) AS net FROM sale_items WHERE sale_id = s.id) si ON TRUE
-      WHERE s.branch_id = $1 AND (s.created_at AT TIME ZONE $2)::date BETWEEN $3::date - 1 AND $3::date ${salesScope}
+      WHERE s.branch_id = $1 AND (s.created_at AT TIME ZONE $2)::date BETWEEN $3::date - 1 AND $3::date
+        -- Yesterday is counted only up to this time of day, so the comparison is like for like.
+        AND ((s.created_at AT TIME ZONE $2)::date = $3::date OR s.created_at <= now() - interval '1 day') ${salesScope}
       GROUP BY 1`,
     scoped,
   );
@@ -54,7 +56,7 @@ export async function dashboard(actor: Actor, period: DashboardPeriod) {
     const r = returnsToday.rows[0];
     const yReturns = await pool.query(
       `SELECT COALESCE(sum(net_amount), 0) AS net, COALESCE(sum(cost_restocked), 0) AS cost FROM sale_returns
-        WHERE branch_id = $1 AND (created_at AT TIME ZONE $2)::date = $3::date - 1`,
+        WHERE branch_id = $1 AND (created_at AT TIME ZONE $2)::date = $3::date - 1 AND created_at <= now() - interval '1 day'`,
       base,
     );
     const yr = yReturns.rows[0];
@@ -188,7 +190,7 @@ async function salesSeries(actor: Actor, period: DashboardPeriod, tz: string, to
      agg AS (
        SELECT ${bucketExpr} AS bucket, sum(s.total) AS total, count(*)::int AS transactions
          FROM sales s WHERE s.branch_id = $1 AND ${local}::date BETWEEN $3::date AND $4::date ${own} GROUP BY 1)
-     SELECT buckets.bucket, COALESCE(agg.total, 0) AS total, COALESCE(agg.transactions, 0) AS transactions
+     SELECT to_char(buckets.bucket, 'YYYY-MM-DD"T"HH24:MI') AS bucket, COALESCE(agg.total, 0) AS total, COALESCE(agg.transactions, 0) AS transactions
        FROM buckets LEFT JOIN agg ON agg.bucket = buckets.bucket ORDER BY buckets.bucket`,
     params,
   );

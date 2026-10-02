@@ -35,7 +35,8 @@ authRouter.post('/login', loginLimiter, requireClientHeader, async (req, res) =>
 authRouter.post('/refresh', requireClientHeader, async (req, res) => {
   const token = req.cookies?.[COOKIE];
   if (!token) {
-    res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Please sign in.' } });
+    // No session cookie is a normal state (signed out), not an error.
+    res.json({ accessToken: null, user: null });
     return;
   }
   try {
