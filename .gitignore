@@ -1,10 +1,35 @@
+# Dependencies and build output
 node_modules/
 dist/
 coverage/
+*.tsbuildinfo
+
+# Environment and secrets — never commit these (docs/SECURITY.md)
 .env
 .env.*
 !.env.example
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+*.keystore
+id_rsa*
+credentials*.json
+service-account*.json
+secrets/
+
+# Data: uploads, backups and database dumps contain patient and business records
 server/storage/
-*.log
-.DS_Store
 server/storage-test/
+storage/
+backups/
+*.dump
+*.dump.enc
+*.sql.gz
+
+# Logs and local noise
+logs/
+*.log
+npm-debug.log*
+.DS_Store

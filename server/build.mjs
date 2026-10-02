@@ -12,6 +12,7 @@ await build({
     migrate: 'src/db/migrate-cli.ts',
     'create-admin': 'src/db/create-admin.ts',
     alerts: 'src/jobs/run-alerts.ts',
+    'backup-decrypt': 'src/db/backup-decrypt.ts',
   },
   outdir: 'dist',
   bundle: true,

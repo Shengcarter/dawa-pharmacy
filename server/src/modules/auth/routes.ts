@@ -1,10 +1,12 @@
 import { Router, type Request, type Response } from 'express';
 import {
-  changePasswordSchema, forgotPasswordSchema, loginSchema, preferencesSchema, profileSchema, resetPasswordSchema,
+  changePasswordSchema, forgotPasswordSchema, loginSchema, mfaCode, mfaDisableSchema, mfaEnableSchema, mfaLoginSchema, preferencesSchema,
+  profileSchema, resetPasswordSchema,
 } from '@dawa/shared';
+import { z } from 'zod';
 import { env } from '../../config/env';
 import { actorOf, authenticate, clientIp, requireClientHeader } from '../../middleware/auth';
-import { loginLimiter, passwordResetLimiter } from '../../middleware/rateLimit';
+import { loginLimiter, mfaLimiter, passwordResetLimiter, sensitiveLimiter } from '../../middleware/rateLimit';
 import { mailEnabled } from '../../lib/mailer';
 import { logger } from '../../lib/logger';
 import * as auth from './service';
@@ -28,9 +30,38 @@ export const authRouter = Router();
 
 authRouter.post('/login', loginLimiter, requireClientHeader, async (req, res) => {
   const { email, password } = loginSchema.parse(req.body);
-  const session = await auth.login(email, password, client(req));
+  const result = await auth.login(email, password, client(req));
+  if (result.mfaRequired) {
+    res.json({ mfaRequired: true, mfaToken: result.mfaToken });
+    return;
+  }
+  setRefreshCookie(res, result.refreshToken, result.expiresAt);
+  res.json({ accessToken: result.accessToken, user: result.user });
+});
+
+/** Second sign-in step for accounts with two-factor authentication. */
+authRouter.post('/login/mfa', mfaLimiter, requireClientHeader, async (req, res) => {
+  const { mfaToken, code } = mfaLoginSchema.parse(req.body);
+  const session = await auth.completeMfaLogin(mfaToken, code, client(req));
   setRefreshCookie(res, session.refreshToken, session.expiresAt);
   res.json({ accessToken: session.accessToken, user: session.user });
+});
+
+authRouter.post('/mfa/setup', authenticate, sensitiveLimiter, async (req, res) => {
+  res.json(await auth.startMfaSetup(actorOf(req)));
+});
+authRouter.post('/mfa/enable', authenticate, sensitiveLimiter, async (req, res) => {
+  const { code, currentPassword } = mfaEnableSchema.parse(req.body);
+  res.json(await auth.enableMfa(actorOf(req), code, currentPassword, client(req)));
+});
+authRouter.post('/mfa/disable', authenticate, sensitiveLimiter, async (req, res) => {
+  const { code, currentPassword } = mfaDisableSchema.parse(req.body);
+  await auth.disableMfa(actorOf(req), code, currentPassword, client(req));
+  res.json({ message: 'Two-factor authentication is off.' });
+});
+authRouter.post('/mfa/recovery-codes', authenticate, sensitiveLimiter, async (req, res) => {
+  const { code } = z.object({ code: mfaCode }).parse(req.body);
+  res.json(await auth.regenerateRecoveryCodes(actorOf(req), code));
 });
 
 authRouter.post('/refresh', requireClientHeader, async (req, res) => {
@@ -79,7 +110,7 @@ authRouter.get('/me', authenticate, async (req, res) => {
   res.json(await auth.loadAuthUser(actorOf(req).userId));
 });
 
-authRouter.post('/change-password', authenticate, async (req, res) => {
+authRouter.post('/change-password', authenticate, sensitiveLimiter, async (req, res) => {
   const { currentPassword, newPassword } = changePasswordSchema.parse(req.body);
   await auth.changePassword(actorOf(req), req.sessionId!, currentPassword, newPassword);
   res.json({ message: 'Password changed. Other devices have been signed out.' });

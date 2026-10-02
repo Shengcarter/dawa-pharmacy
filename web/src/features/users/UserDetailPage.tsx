@@ -10,7 +10,7 @@ import { Page } from '@/components/layout/AppLayout';
 import { Alert, Badge, Button, Card, DataTable, DetailList, EmptyState, ErrorState, Field, Figure, Input, Modal, PageHeader, PageLoader, SummaryStrip, useToast } from '@/components/ui';
 import { UserFormModal } from './UserForm';
 
-interface UserDetail { id: number; branchId: number; branchName: string; fullName: string; email: string; phone: string | null; jobTitle: string | null; status: string; lastLoginAt: string | null; createdAt: string; mustChangePassword: boolean; locked: boolean; roles: { id: number; code: string; name: string }[]; loginActivity: LoginEvent[]; thisMonth: { transactions: number; revenue: number } }
+interface UserDetail { id: number; branchId: number; branchName: string; fullName: string; email: string; phone: string | null; jobTitle: string | null; status: string; lastLoginAt: string | null; createdAt: string; mustChangePassword: boolean; locked: boolean; mfaEnabled: boolean; accessExpiresOn: string | null; roles: { id: number; code: string; name: string }[]; loginActivity: LoginEvent[]; thisMonth: { transactions: number; revenue: number } }
 export interface LoginEvent { event: string; ip: string | null; userAgent: string | null; detail: string | null; createdAt: string; fullName?: string | null; email?: string }
 
 const EVENT_LABELS: Record<string, string> = { login: 'Signed in', login_failed: 'Failed sign-in', logout: 'Signed out', locked: 'Locked after failed attempts', password_reset: 'Password reset', password_changed: 'Password changed', token_reuse: 'Suspicious session reuse — signed out everywhere' };
@@ -32,7 +32,7 @@ export function UserDetailPage() {
   const { can, user: me } = useAuth();
   const qc = useQueryClient();
   const toast = useToast();
-  const { money, dateTime } = useFormat();
+  const { money, dateTime, date } = useFormat();
   const [editing, setEditing] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [password, setPassword] = useState('');
@@ -40,6 +40,11 @@ export function UserDetailPage() {
   const reset = useMutation({
     mutationFn: () => api.post(`/users/${id}/reset-password`, { password }),
     onSuccess: () => { toast.success('Password reset', 'Give the temporary password to the user in person.'); setResetting(false); setPassword(''); qc.invalidateQueries({ queryKey: ['user', id] }); },
+  });
+  const resetMfa = useMutation({
+    mutationFn: () => api.post<{ message: string }>(`/users/${id}/reset-mfa`),
+    onSuccess: (r) => { toast.success(r.message); qc.invalidateQueries({ queryKey: ['user', id] }); },
+    onError: (e) => toast.error('Not reset', (e as Error).message),
   });
   const unlock = useMutation({ mutationFn: () => api.post(`/users/${id}/unlock`), onSuccess: () => { toast.success('Account unlocked'); qc.invalidateQueries({ queryKey: ['user', id] }); } });
   if (isLoading) return <PageLoader />;
@@ -54,6 +59,9 @@ export function UserDetailPage() {
           <>
             {u.locked && <Button icon={<LockOpen className="size-3.5" />} loading={unlock.isPending} onClick={() => unlock.mutate()}>Unlock</Button>}
             {u.id !== me?.id && <Button icon={<KeyRound className="size-3.5" />} onClick={() => setResetting(true)}>Reset password</Button>}
+            {u.id !== me?.id && u.mfaEnabled && (
+              <Button loading={resetMfa.isPending} onClick={() => { if (window.confirm(`Reset two-factor authentication for ${u.fullName}? They will be signed out and must set it up again.`)) resetMfa.mutate(); }}>Reset 2FA</Button>
+            )}
             <Button variant="primary" icon={<Pencil className="size-3.5" />} onClick={() => setEditing(true)}>Edit</Button>
           </>
         )} />
@@ -72,6 +80,8 @@ export function UserDetailPage() {
             { label: 'Phone', value: u.phone },
             { label: 'Created', value: dateTime(u.createdAt) },
             { label: 'Password', value: u.mustChangePassword ? 'Temporary — must be changed at next sign-in' : 'Set by the user' },
+            { label: 'Two-factor', value: u.mfaEnabled ? 'On' : 'Off' },
+            { label: 'Access ends', value: u.accessExpiresOn ? date(u.accessExpiresOn) : null, hidden: !u.accessExpiresOn },
           ]} />
         </Card>
       </div>

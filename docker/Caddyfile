@@ -1,0 +1,15 @@
+# HTTPS in front of the app. Set SITE_ADDRESS in .env:
+#  - a domain pointing at this server (e.g. pharmacy.example.co.tz): Caddy gets a
+#    free Let's Encrypt certificate and renews it automatically;
+#  - or the server's LAN address (e.g. 192.168.1.10) for an in-shop install: Caddy
+#    uses its own certificate authority (install its root certificate on the tills,
+#    see docs/SECURITY.md).
+{$SITE_ADDRESS} {
+	encode gzip
+	reverse_proxy app:4000
+	log {
+		output stdout
+	}
+}
+
+# Anything on plain HTTP is redirected to HTTPS by Caddy automatically.

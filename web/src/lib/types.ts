@@ -8,7 +8,7 @@ export interface AppSettings {
   sales: Settings['sales'];
   notifications?: Settings['notifications'];
   system?: Settings['system'];
-  meta: { currencies: { code: string; name: string }[]; emailEnabled: boolean };
+  meta: { currencies: { code: string; name: string }[]; emailEnabled: boolean; idleTimeoutMinutes: number };
 }
 
 export interface ProductRow {

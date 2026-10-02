@@ -4,12 +4,16 @@ import { useAuth } from '@/lib/auth';
 import { api } from '@/lib/api';
 import { applyTheme, useMediaQuery } from '@/lib/hooks';
 import { cn } from '@/lib/cn';
+import { useIdleLogout } from '@/lib/idle';
+import { useFormat } from '@/lib/settings';
 import { PageLoader } from '../ui';
 import { Sidebar } from './Sidebar';
 import { Topbar } from './Topbar';
 
 export function AppLayout() {
-  const { user, status, setUser } = useAuth();
+  const { user, status, setUser, logout } = useAuth();
+  const { settings } = useFormat();
+  useIdleLogout(settings?.meta.idleTimeoutMinutes, status === 'signed-in', () => { void logout(); });
   const location = useLocation();
   const desktop = useMediaQuery('(min-width: 1024px)');
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -23,6 +27,7 @@ export function AppLayout() {
   if (status === 'loading') return <div className="flex h-screen items-center justify-center"><PageLoader /></div>;
   if (!user) return <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />;
   if (user.mustChangePassword && location.pathname !== '/profile') return <Navigate to="/profile?tab=password&required=1" replace />;
+  if (user.mfaSetupRequired && location.pathname !== '/profile') return <Navigate to="/profile?tab=security" replace />;
 
   const toggle = () => {
     const preferences = { ...user.preferences, sidebarCollapsed: !collapsed };

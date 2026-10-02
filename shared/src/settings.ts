@@ -51,6 +51,10 @@ export const systemSettingsSchema = z.object({
   auditRetentionDays: z.coerce.number().int().min(365).max(3650).default(2555),
   backupRetentionCount: z.coerce.number().int().min(1).max(365).default(14),
   autoBackupDaily: z.boolean().default(false),
+  /** Signed out after this long without activity (on top of the absolute session length). */
+  idleTimeoutMinutes: z.coerce.number().int().min(20, "At least 20 minutes").max(720).default(30),
+  /** Staff who can manage users, roles, settings or backups must use two-factor authentication. */
+  requireAdminMfa: z.boolean().default(false),
 });
 
 export const settingsSchemas = {

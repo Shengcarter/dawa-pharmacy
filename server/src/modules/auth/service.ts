@@ -1,10 +1,13 @@
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import bcrypt from 'bcryptjs';
-import { preferencesSchema, type AuthUser } from '@dawa/shared';
+import { authenticator } from 'otplib';
+import QRCode from 'qrcode';
+import { PRIVILEGED_PERMISSIONS, preferencesSchema, todayIn, type AuthUser } from '@dawa/shared';
 import { pool, withTransaction, type Db } from '../../db/pool';
 import type { Actor } from '../../lib/actor';
 import { audit } from '../../lib/audit';
-import { AppError, badRequest, unauthorized } from '../../lib/errors';
+import { AppError, badRequest, forbidden, unauthorized, unprocessable } from '../../lib/errors';
+import { decrypt, encrypt } from '../../lib/crypto';
 import { randomToken, sha256, signAccessToken } from '../../lib/tokens';
 import { sendMail } from '../../lib/mailer';
 import { env } from '../../config/env';
@@ -14,15 +17,20 @@ const BCRYPT_ROUNDS = 12;
 const MAX_FAILED_LOGINS = 5;
 const LOCK_MINUTES = 15;
 const RESET_TOKEN_MINUTES = 30;
+const MFA_CHALLENGE_MINUTES = 5;
+const MFA_MAX_ATTEMPTS = 5;
+const RECOVERY_CODE_COUNT = 10;
+// Accept the previous and next 30-second code for clock drift.
+authenticator.options = { window: 1 };
 
 export const hashPassword = (password: string) => bcrypt.hash(password, BCRYPT_ROUNDS);
 
-interface ClientInfo {
+export interface ClientInfo {
   ip: string | null;
   userAgent: string | null;
 }
 
-async function logActivity(db: Db, userId: number | null, email: string, event: string, client: ClientInfo, detail?: string) {
+export async function logActivity(db: Db, userId: number | null, email: string, event: string, client: ClientInfo, detail?: string) {
   await db.query(
     `INSERT INTO login_activity (user_id, email, event, ip, user_agent, detail) VALUES ($1,$2,$3,$4,$5,$6)`,
     [userId, email, event, client.ip, client.userAgent?.slice(0, 300) ?? null, detail ?? null],
@@ -31,7 +39,7 @@ async function logActivity(db: Db, userId: number | null, email: string, event: 
 
 export async function loadAuthUser(userId: number, db: Db = pool): Promise<AuthUser> {
   const { rows } = await db.query(
-    `SELECT u.id, u.full_name, u.email, u.phone, u.job_title, u.must_change_password, u.preferences,
+    `SELECT u.id, u.full_name, u.email, u.phone, u.job_title, u.must_change_password, u.preferences, u.mfa_enabled_at,
             b.id AS branch_id, b.name AS branch_name,
             COALESCE(json_agg(DISTINCT jsonb_build_object('code', r.code, 'name', r.name)) FILTER (WHERE r.id IS NOT NULL), '[]') AS roles,
             COALESCE(array_agg(DISTINCT p.code) FILTER (WHERE p.code IS NOT NULL), '{}') AS permissions
@@ -47,6 +55,8 @@ export async function loadAuthUser(userId: number, db: Db = pool): Promise<AuthU
   );
   const u = rows[0];
   if (!u) throw unauthorized();
+  const mfaEnabled = u.mfa_enabled_at !== null;
+  const mfaRequired = await mfaRequiredFor(u.permissions);
   return {
     id: u.id,
     fullName: u.full_name,
@@ -57,6 +67,8 @@ export async function loadAuthUser(userId: number, db: Db = pool): Promise<AuthU
     permissions: [...u.permissions].sort(),
     branch: { id: u.branch_id, name: u.branch_name },
     mustChangePassword: u.must_change_password,
+    mfaEnabled,
+    mfaSetupRequired: mfaRequired && !mfaEnabled,
     preferences: preferencesSchema.parse(u.preferences ?? {}),
   };
 }
@@ -69,10 +81,14 @@ export interface IssuedSession {
   user: AuthUser;
 }
 
-async function issueSession(db: Db, userId: number, client: ClientInfo, familyId: string = randomUUID()) {
+/**
+ * Creates a session row. A rotation passes the family's original expiry: the
+ * session length is absolute from sign-in, however active the user is.
+ */
+async function issueSession(db: Db, userId: number, client: ClientInfo, familyId: string = randomUUID(), absoluteExpiry?: Date) {
   const settings = await getSettings();
   const refreshToken = randomToken(48);
-  const expiresAt = new Date(Date.now() + settings.system.sessionHours * 3_600_000);
+  const expiresAt = absoluteExpiry ?? new Date(Date.now() + settings.system.sessionHours * 3_600_000);
   const { rows } = await db.query(
     `INSERT INTO auth_sessions (user_id, token_hash, family_id, expires_at, ip, user_agent)
      VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
@@ -82,12 +98,23 @@ async function issueSession(db: Db, userId: number, client: ClientInfo, familyId
   return { sessionId, refreshToken, expiresAt, accessToken: signAccessToken(userId, sessionId) };
 }
 
+/** Whether the 2FA policy applies to an account with these permissions. */
+export async function mfaRequiredFor(permissions: Iterable<string>) {
+  const settings = await getSettings();
+  if (!settings.system.requireAdminMfa) return false;
+  const set = new Set(permissions);
+  return PRIVILEGED_PERMISSIONS.some((p) => set.has(p));
+}
+
 /** A precomputed hash so unknown emails take as long as wrong passwords (no user enumeration by timing). */
 const DUMMY_HASH = bcrypt.hashSync('dawa-timing-equaliser', BCRYPT_ROUNDS);
 
-export async function login(email: string, password: string, client: ClientInfo): Promise<IssuedSession & { refreshToken: string }> {
+export type LoginResult = (IssuedSession & { refreshToken: string; mfaRequired?: false }) | { mfaRequired: true; mfaToken: string };
+
+export async function login(email: string, password: string, client: ClientInfo): Promise<LoginResult> {
   const { rows } = await pool.query(
-    `SELECT id, email, password_hash, status, failed_login_count, locked_until FROM users WHERE lower(email) = lower($1)`,
+    `SELECT id, email, password_hash, status, failed_login_count, locked_until, mfa_enabled_at, access_expires_on::text AS access_expires_on
+       FROM users WHERE lower(email) = lower($1)`,
     [email],
   );
   const user = rows[0];
@@ -116,12 +143,177 @@ export async function login(email: string, password: string, client: ClientInfo)
     await logActivity(pool, user.id, email, 'login_failed', client, 'account suspended');
     throw new AppError(403, 'SUSPENDED', 'This account is suspended. Contact your manager.');
   }
+  if (await accessExpired(user.access_expires_on)) {
+    await logActivity(pool, user.id, email, 'access_expired', client, `access ended ${user.access_expires_on}`);
+    throw new AppError(403, 'ACCESS_EXPIRED', 'Your access to this system has ended. Contact your manager.');
+  }
+  if (user.mfa_enabled_at) {
+    // Password is right; the session is only issued after the second factor.
+    await pool.query(`UPDATE users SET failed_login_count = 0, locked_until = NULL WHERE id = $1`, [user.id]);
+    const mfaToken = randomToken(32);
+    await pool.query(
+      `INSERT INTO mfa_challenges (user_id, token_hash, expires_at) VALUES ($1, $2, now() + make_interval(mins => $3))`,
+      [user.id, sha256(mfaToken), MFA_CHALLENGE_MINUTES],
+    );
+    return { mfaRequired: true, mfaToken };
+  }
+  return startSession(user.id, user.email, client);
+}
+
+async function accessExpired(lastDay: string | null) {
+  if (!lastDay) return false;
+  const settings = await getSettings();
+  return lastDay < todayIn(settings.general.timezone);
+}
+
+function startSession(userId: number, email: string, client: ClientInfo, detail?: string) {
   return withTransaction(async (tx) => {
-    await tx.query(`UPDATE users SET failed_login_count = 0, locked_until = NULL, last_login_at = now() WHERE id = $1`, [user.id]);
-    const session = await issueSession(tx, user.id, client);
-    await logActivity(tx, user.id, user.email, 'login', client);
-    const authUser = await loadAuthUser(user.id, tx);
+    await tx.query(`UPDATE users SET failed_login_count = 0, locked_until = NULL, last_login_at = now() WHERE id = $1`, [userId]);
+    const session = await issueSession(tx, userId, client);
+    await logActivity(tx, userId, email, 'login', client, detail);
+    const authUser = await loadAuthUser(userId, tx);
     return { accessToken: session.accessToken, refreshToken: session.refreshToken, expiresAt: session.expiresAt, user: authUser };
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Two-factor authentication (TOTP, RFC 6238, via otplib)
+// ---------------------------------------------------------------------------
+const RECOVERY_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const normaliseRecovery = (code: string) => code.replace(/[\s-]/g, '').toUpperCase();
+
+function newRecoveryCodes() {
+  return Array.from({ length: RECOVERY_CODE_COUNT }, () => {
+    const bytes = randomBytes(10);
+    const chars = [...bytes].map((b) => RECOVERY_ALPHABET[b % RECOVERY_ALPHABET.length]).join('');
+    return `${chars.slice(0, 5)}-${chars.slice(5)}`;
+  });
+}
+
+/**
+ * Checks a TOTP code and returns its time step, refusing a code (or an older
+ * one) that was already used, so an intercepted code cannot be replayed.
+ */
+function checkTotp(secret: string, code: string, lastStep: number | null): number | null {
+  if (!/^\d{6}$/.test(code)) return null;
+  const delta = authenticator.checkDelta(code, secret);
+  if (delta === null) return null;
+  const step = Math.floor(Date.now() / 1000 / 30) + delta;
+  if (lastStep !== null && step <= lastStep) return null;
+  return step;
+}
+
+interface MfaUserRow { id: number; email: string; mfa_secret_enc: string | null; mfa_last_step: string | null; mfa_recovery_hashes: string[] }
+
+/** Verifies a TOTP or recovery code for a user (inside a transaction holding the user row). Returns how it matched. */
+async function verifySecondFactor(tx: Db, user: MfaUserRow, code: string): Promise<'totp' | 'recovery' | null> {
+  if (!user.mfa_secret_enc) return null;
+  const step = checkTotp(decrypt(user.mfa_secret_enc), code, user.mfa_last_step === null ? null : Number(user.mfa_last_step));
+  if (step !== null) {
+    await tx.query('UPDATE users SET mfa_last_step = $2 WHERE id = $1', [user.id, step]);
+    return 'totp';
+  }
+  const hash = sha256(normaliseRecovery(code));
+  if (user.mfa_recovery_hashes.includes(hash)) {
+    await tx.query('UPDATE users SET mfa_recovery_hashes = array_remove(mfa_recovery_hashes, $2) WHERE id = $1', [user.id, hash]);
+    return 'recovery';
+  }
+  return null;
+}
+
+/** Second step of sign-in: the challenge token from login() plus a code. */
+export async function completeMfaLogin(mfaToken: string, code: string, client: ClientInfo) {
+  const invalid = new AppError(401, 'MFA_INVALID', 'That code is not right. Check your authenticator app and try again.');
+  const expired = new AppError(401, 'MFA_EXPIRED', 'This sign-in has expired. Enter your email and password again.');
+  const outcome = await withTransaction(async (tx) => {
+    const { rows } = await tx.query(
+      `SELECT c.id, c.attempts, c.used_at, c.expires_at < now() AS expired, u.id AS user_id, u.email, u.status,
+              u.mfa_secret_enc, u.mfa_last_step, u.mfa_recovery_hashes, u.access_expires_on::text AS access_expires_on
+         FROM mfa_challenges c JOIN users u ON u.id = c.user_id WHERE c.token_hash = $1 FOR UPDATE OF c, u`,
+      [sha256(mfaToken)],
+    );
+    const c = rows[0];
+    if (!c || c.used_at || c.expired || c.attempts >= MFA_MAX_ATTEMPTS || c.status !== 'active') return { error: expired };
+    const matched = await verifySecondFactor(tx, { id: c.user_id, email: c.email, mfa_secret_enc: c.mfa_secret_enc, mfa_last_step: c.mfa_last_step, mfa_recovery_hashes: c.mfa_recovery_hashes }, code);
+    if (!matched) {
+      await tx.query('UPDATE mfa_challenges SET attempts = attempts + 1 WHERE id = $1', [c.id]);
+      await logActivity(tx, c.user_id, c.email, 'mfa_failed', client, `attempt ${c.attempts + 1} of ${MFA_MAX_ATTEMPTS}`);
+      return { error: invalid };
+    }
+    await tx.query('UPDATE mfa_challenges SET used_at = now() WHERE id = $1', [c.id]);
+    if (matched === 'recovery') await logActivity(tx, c.user_id, c.email, 'mfa_recovery_used', client);
+    return { userId: c.user_id as number, email: c.email as string, matched };
+  });
+  // Failed attempts are committed before the error is raised.
+  if ('error' in outcome) throw outcome.error;
+  return startSession(outcome.userId, outcome.email, client, outcome.matched === 'recovery' ? 'with a recovery code' : 'with 2FA');
+}
+
+async function lockedUserForMfa(tx: Db, userId: number) {
+  const { rows } = await tx.query(
+    'SELECT id, email, password_hash, mfa_secret_enc, mfa_pending_secret_enc, mfa_last_step, mfa_recovery_hashes, mfa_enabled_at FROM users WHERE id = $1 FOR UPDATE',
+    [userId],
+  );
+  if (!rows[0]) throw unauthorized();
+  return rows[0];
+}
+
+/** Starts enrolment: a new secret (kept pending until confirmed) and its QR code. */
+export async function startMfaSetup(actor: Actor) {
+  const settings = await getSettings();
+  return withTransaction(async (tx) => {
+    const user = await lockedUserForMfa(tx, actor.userId);
+    if (user.mfa_enabled_at) throw unprocessable('Two-factor authentication is already on. Turn it off first to move it to a new device.');
+    const secret = authenticator.generateSecret(20);
+    await tx.query('UPDATE users SET mfa_pending_secret_enc = $2 WHERE id = $1', [actor.userId, encrypt(secret)]);
+    const otpauthUrl = authenticator.keyuri(user.email, settings.general.pharmacyName || 'Dawa', secret);
+    return { secret, otpauthUrl, qrDataUrl: await QRCode.toDataURL(otpauthUrl, { margin: 1, width: 220 }) };
+  });
+}
+
+/** Confirms enrolment with the current password and a code; returns single-use recovery codes (shown once). */
+export async function enableMfa(actor: Actor, code: string, currentPassword: string, client: ClientInfo) {
+  return withTransaction(async (tx) => {
+    const user = await lockedUserForMfa(tx, actor.userId);
+    if (user.mfa_enabled_at) throw unprocessable('Two-factor authentication is already on.');
+    if (!(await bcrypt.compare(currentPassword, user.password_hash))) throw badRequest('Current password is incorrect.', { fields: { currentPassword: 'Current password is incorrect' } });
+    if (!user.mfa_pending_secret_enc) throw unprocessable('Start the set-up again.');
+    const secret = decrypt(user.mfa_pending_secret_enc);
+    const step = checkTotp(secret, code, null);
+    if (step === null) throw badRequest('That code is not right. Check the time on your phone and try the newest code.', { fields: { code: 'Code not accepted' } });
+    const codes = newRecoveryCodes();
+    await tx.query(
+      `UPDATE users SET mfa_secret_enc = $2, mfa_pending_secret_enc = NULL, mfa_enabled_at = now(), mfa_last_step = $3, mfa_recovery_hashes = $4 WHERE id = $1`,
+      [actor.userId, encrypt(secret), step, codes.map((c) => sha256(normaliseRecovery(c)))],
+    );
+    await logActivity(tx, actor.userId, user.email, 'mfa_enabled', client);
+    await audit(tx, actor, { action: 'mfa_enabled', module: 'auth', entityType: 'user', entityId: actor.userId, summary: `${actor.userName} turned on two-factor authentication` });
+    return { recoveryCodes: codes };
+  });
+}
+
+export async function disableMfa(actor: Actor, code: string, currentPassword: string, client: ClientInfo) {
+  return withTransaction(async (tx) => {
+    const user = await lockedUserForMfa(tx, actor.userId);
+    if (!user.mfa_enabled_at) throw unprocessable('Two-factor authentication is not on.');
+    if (await mfaRequiredFor(actor.permissions)) throw forbidden('Your role must use two-factor authentication. Ask another administrator to reset it if you lost your device.');
+    if (!(await bcrypt.compare(currentPassword, user.password_hash))) throw badRequest('Current password is incorrect.', { fields: { currentPassword: 'Current password is incorrect' } });
+    if (!(await verifySecondFactor(tx, user, code))) throw badRequest('That code is not right.', { fields: { code: 'Code not accepted' } });
+    await tx.query(`UPDATE users SET mfa_secret_enc = NULL, mfa_pending_secret_enc = NULL, mfa_enabled_at = NULL, mfa_last_step = NULL, mfa_recovery_hashes = '{}' WHERE id = $1`, [actor.userId]);
+    await logActivity(tx, actor.userId, user.email, 'mfa_disabled', client);
+    await audit(tx, actor, { action: 'mfa_disabled', module: 'auth', entityType: 'user', entityId: actor.userId, summary: `${actor.userName} turned off two-factor authentication` });
+  });
+}
+
+export async function regenerateRecoveryCodes(actor: Actor, code: string) {
+  return withTransaction(async (tx) => {
+    const user = await lockedUserForMfa(tx, actor.userId);
+    if (!user.mfa_enabled_at) throw unprocessable('Two-factor authentication is not on.');
+    if (!(await verifySecondFactor(tx, user, code))) throw badRequest('That code is not right.', { fields: { code: 'Code not accepted' } });
+    const codes = newRecoveryCodes();
+    await tx.query('UPDATE users SET mfa_recovery_hashes = $2 WHERE id = $1', [actor.userId, codes.map((c) => sha256(normaliseRecovery(c)))]);
+    await audit(tx, actor, { action: 'mfa_recovery_codes', module: 'auth', entityType: 'user', entityId: actor.userId, summary: `${actor.userName} generated new 2FA recovery codes` });
+    return { recoveryCodes: codes };
   });
 }
 
@@ -142,9 +334,11 @@ export async function refresh(refreshToken: string, client: ClientInfo): Promise
   const ended = () => unauthorized('Your session has ended. Please sign in again.');
   const result = await withTransaction(async (tx) => {
     const { rows } = await tx.query(
-      `SELECT s.*, u.status, u.email, (s.revoked_at > now() - make_interval(secs => $2)) AS in_grace
+      `SELECT s.*, u.status, u.email, u.access_expires_on::text AS access_expires_on,
+              (s.revoked_at > now() - make_interval(secs => $2)) AS in_grace,
+              (s.created_at < now() - make_interval(mins => $3)) AS idle
          FROM auth_sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = $1 FOR UPDATE OF s`,
-      [sha256(refreshToken), ROTATION_GRACE_SECONDS],
+      [sha256(refreshToken), ROTATION_GRACE_SECONDS, Math.max((await getSettings()).system.idleTimeoutMinutes, env.ACCESS_TOKEN_TTL_MINUTES + 5)],
     );
     const s = rows[0];
     if (!s) return null;
@@ -171,7 +365,14 @@ export async function refresh(refreshToken: string, client: ClientInfo): Promise
       return null;
     }
     if (new Date(s.expires_at) <= new Date() || s.status !== 'active') return null;
-    const next = await issueSession(tx, s.user_id, client, s.family_id);
+    // Each refresh creates a new row, so the row's age is the time since the sign-in was last used.
+    const endedFor = s.idle ? 'idle_timeout' : (await accessExpired(s.access_expires_on)) ? 'access_expired' : null;
+    if (endedFor) {
+      await tx.query(`UPDATE auth_sessions SET revoked_at = now(), revoked_reason = $2 WHERE family_id = $1 AND revoked_at IS NULL`, [s.family_id, endedFor]);
+      await logActivity(tx, s.user_id, s.email, endedFor === 'idle_timeout' ? 'session_expired' : 'access_expired', client, endedFor === 'idle_timeout' ? 'signed out after inactivity' : undefined);
+      return null;
+    }
+    const next = await issueSession(tx, s.user_id, client, s.family_id, new Date(s.expires_at));
     await tx.query(`UPDATE auth_sessions SET revoked_at = now(), revoked_reason = 'rotated', replaced_by = $2 WHERE id = $1`, [s.id, next.sessionId]);
     const user = await loadAuthUser(s.user_id, tx);
     return { accessToken: next.accessToken, refreshToken: next.refreshToken, expiresAt: next.expiresAt, user };

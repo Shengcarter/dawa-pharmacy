@@ -34,6 +34,11 @@ usersRouter.post('/:id/reset-password', requirePermission('users.manage'), async
   res.json({ message: 'Password reset. The user must choose a new password at next sign-in.' });
 });
 
+usersRouter.post('/:id/reset-mfa', requirePermission('users.manage'), async (req, res) => {
+  await users.adminResetMfa(actorOf(req), idParam(req.params.id));
+  res.json({ message: 'Two-factor authentication reset. The user has been signed out.' });
+});
+
 usersRouter.post('/:id/unlock', requirePermission('users.manage'), async (req, res) => {
   await users.unlockUser(actorOf(req), idParam(req.params.id));
   res.json({ message: 'Account unlocked.' });

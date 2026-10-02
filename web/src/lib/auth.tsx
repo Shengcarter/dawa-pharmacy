@@ -6,7 +6,9 @@ import { queryClient } from './query';
 interface AuthState {
   user: AuthUser | null;
   status: 'loading' | 'signed-in' | 'signed-out';
-  login: (email: string, password: string) => Promise<AuthUser>;
+  /** Returns the user, or a challenge token when the account uses two-factor authentication. */
+  login: (email: string, password: string) => Promise<AuthUser | { mfaToken: string }>;
+  completeMfa: (mfaToken: string, code: string) => Promise<AuthUser>;
   logout: () => Promise<void>;
   setUser: (user: AuthUser) => void;
   can: (...permissions: string[]) => boolean;
@@ -39,6 +41,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const login = useCallback(async (email: string, password: string) => {
     const r = await authApi.login(email, password);
+    if ('mfaRequired' in r) return { mfaToken: r.mfaToken };
+    setAccessToken(r.accessToken);
+    setUser(r.user as AuthUser);
+    setStatus('signed-in');
+    return r.user as AuthUser;
+  }, []);
+
+  const completeMfa = useCallback(async (mfaToken: string, code: string) => {
+    const r = await authApi.loginMfa(mfaToken, code);
     setAccessToken(r.accessToken);
     setUser(r.user as AuthUser);
     setStatus('signed-in');
@@ -58,7 +69,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [user],
   );
 
-  const value = useMemo(() => ({ user, status, login, logout, setUser, can }), [user, status, login, logout, can]);
+  const value = useMemo(() => ({ user, status, login, completeMfa, logout, setUser, can }), [user, status, login, completeMfa, logout, can]);
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 

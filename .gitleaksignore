@@ -1,0 +1,6 @@
+# Reviewed false positives only. Each line: commit:file:rule:line, with the reason above it.
+# A real secret must NEVER be added here: rotate it instead (docs/SECURITY.md, "If a secret leaks").
+
+# Test-only JWT signing key formerly hard-coded in the Vitest config (never used outside the
+# test database); the config now generates a random key per run.
+d028aefabb479395d7e5eac790eed1f4b2932704:server/vitest.config.ts:generic-api-key:14

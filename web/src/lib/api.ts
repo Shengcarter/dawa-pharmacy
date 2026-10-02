@@ -140,6 +140,8 @@ export async function openProtectedFile(path: string) {
 
 export const authApi = {
   login: (email: string, password: string) =>
-    request<{ accessToken: string; user: unknown }>('POST', '/auth/login', { email, password }, false),
+    request<{ accessToken: string; user: unknown } | { mfaRequired: true; mfaToken: string }>('POST', '/auth/login', { email, password }, false),
+  loginMfa: (mfaToken: string, code: string) =>
+    request<{ accessToken: string; user: unknown }>('POST', '/auth/login/mfa', { mfaToken, code }, false),
   logout: () => request<void>('POST', '/auth/logout', {}, false),
 };

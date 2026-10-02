@@ -25,7 +25,7 @@ settingsRouter.get('/', async (req, res) => {
     inventory: s.inventory,
     sales: s.sales,
     ...(full ? { notifications: s.notifications, system: s.system } : {}),
-    meta: { currencies: Object.values(CURRENCIES), emailEnabled: mailEnabled },
+    meta: { currencies: Object.values(CURRENCIES), emailEnabled: mailEnabled, idleTimeoutMinutes: s.system.idleTimeoutMinutes },
   });
 });
 
@@ -50,7 +50,7 @@ settingsRouter.post('/test-email', requirePermission('settings.manage'), async (
   res.json({ sentTo: rows[0].email });
 });
 
-settingsRouter.post('/logo', requirePermission('settings.manage'), logoUpload, async (req, res) => {
+settingsRouter.post('/logo', requirePermission('settings.manage'), ...logoUpload, async (req, res) => {
   if (!req.file) throw badRequest('Choose an image to upload.');
   const before = (await getSettings()).general.logoPath;
   const logoPath = relativePublicPath('branding', req.file.filename);

@@ -218,7 +218,11 @@ function SystemSection({ settings }: { settings: AppSettings }) {
   const form = useZodForm(systemSettingsSchema, { defaultValues: settings.system as never });
   const save = useSaveSection('system');
   const submit = form.handleSubmit(async (d) => { setError(null); try { await save.mutateAsync(d); } catch (e) { setError(applyServerErrors(form, e)); } });
-  const backups = useQuery({ queryKey: ['backups'], queryFn: () => api.get<{ name: string; size: number; createdAt: string }[]>('/backups'), enabled: can('backups.manage') });
+  const backups = useQuery({
+    queryKey: ['backups'],
+    queryFn: () => api.get<{ backups: { name: string; size: number; createdAt: string; encrypted: boolean }[]; encrypted: boolean; offServerCopy: boolean }>('/backups'),
+    enabled: can('backups.manage'),
+  });
   const create = useMutation({
     mutationFn: () => api.post<{ name: string }>('/backups'),
     onSuccess: (r) => { qc.invalidateQueries({ queryKey: ['backups'] }); toast.success('Backup created', r.name); },
@@ -233,12 +237,17 @@ function SystemSection({ settings }: { settings: AppSettings }) {
     <div className="space-y-4">
       <SectionCard title="Security & retention" onSave={submit} saving={save.isPending} error={error} readOnly={readOnly}>
         <div className="grid gap-4 sm:grid-cols-3">
-          <Field label="Stay signed in for" hint="After this, staff must sign in again.">{(id) => <Input id={id} inputMode="numeric" suffix="hours" {...form.register('sessionHours')} />}</Field>
+          <Field label="Stay signed in for" hint="From sign-in, however active. Then staff sign in again.">{(id) => <Input id={id} inputMode="numeric" suffix="hours" {...form.register('sessionHours')} />}</Field>
+          <Field label="Sign out after inactivity" error={form.formState.errors.idleTimeoutMinutes?.message} hint="No mouse, keyboard or touch activity for this long.">{(id) => <Input id={id} inputMode="numeric" suffix="minutes" {...form.register('idleTimeoutMinutes')} />}</Field>
           <Field label="Keep audit log for" hint="Minimum one year.">{(id) => <Input id={id} inputMode="numeric" suffix="days" {...form.register('auditRetentionDays')} />}</Field>
           <Field label="Backups to keep">{(id) => <Input id={id} inputMode="numeric" {...form.register('backupRetentionCount')} />}</Field>
         </div>
         <Controller control={form.control} name="autoBackupDaily" render={({ field }) => (
           <Switch checked={Boolean(field.value)} onChange={field.onChange} disabled={readOnly} label="Automatic daily backup" description="The server keeps a full database backup every 24 hours. Copy backups off this computer regularly." />
+        )} />
+        <Controller control={form.control} name="requireAdminMfa" render={({ field }) => (
+          <Switch checked={Boolean(field.value)} onChange={field.onChange} disabled={readOnly} label="Require two-factor authentication for administrators"
+            description="Staff who can manage users, roles, settings or backups must set up an authenticator app before they can use the system." />
         )} />
       </SectionCard>
       <Card title="Outgoing email" description="Used for password-reset links. Configured on the server with the SMTP_* environment variables."
@@ -250,8 +259,17 @@ function SystemSection({ settings }: { settings: AppSettings }) {
       {can('backups.manage') && (
         <Card title="Database backups" description="Full PostgreSQL backups. Restore with: pg_restore --clean --if-exists -d <database> <file>"
           actions={<Button variant="primary" size="sm" icon={<Plus className="size-3.5" />} loading={create.isPending} onClick={() => create.mutate()}>Back up now</Button>} flush>
-          <DataTable rows={backups.data} loading={backups.isLoading} error={backups.error} rowKey={(b) => b.name} empty={<EmptyState compact icon={Database} title="No backups yet" />} columns={[
-            { key: 'name', header: 'File', cell: (b) => <span className="font-mono text-[12px]">{b.name}</span> },
+          {backups.data && (!backups.data.encrypted || !backups.data.offServerCopy) && (
+            <div className="px-4 pt-3">
+              <Alert tone="warning" title="Backups are not fully protected">
+                {!backups.data.encrypted && 'Backups are not encrypted (set BACKUP_ENCRYPTION_KEY on the server). '}
+                {!backups.data.offServerCopy && 'Backups are kept only on this server, so a disk failure or theft loses them too (set BACKUP_COPY_DIR to a second drive or network share). '}
+                See docs/SECURITY.md.
+              </Alert>
+            </div>
+          )}
+          <DataTable rows={backups.data?.backups} loading={backups.isLoading} error={backups.error} rowKey={(b) => b.name} empty={<EmptyState compact icon={Database} title="No backups yet" />} columns={[
+            { key: 'name', header: 'File', cell: (b) => <span className="font-mono text-[12px]">{b.name}{b.encrypted && <Badge tone="success" className="ml-2">Encrypted</Badge>}</span> },
             { key: 'when', header: 'Created', cell: (b) => dateTime(b.createdAt) },
             { key: 'size', header: 'Size', align: 'right', cell: (b) => <span className="num">{(b.size / 1024 / 1024).toFixed(1)} MB</span> },
             { key: 'dl', header: '', align: 'right', cell: (b) => <Button size="sm" variant="ghost" icon={<Download className="size-3.5" />} onClick={() => downloadFile(`/backups/${b.name}`, undefined, b.name).catch((e) => toast.error('Download failed', e.message))}>Download</Button> },

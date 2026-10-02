@@ -2,7 +2,7 @@ import { PERMISSION_GROUPS, PERMISSION_LABELS } from '@dawa/shared';
 import { pool, withTransaction } from '../../db/pool';
 import type { Actor } from '../../lib/actor';
 import { audit } from '../../lib/audit';
-import { badRequest, conflict, notFound, unprocessable } from '../../lib/errors';
+import { badRequest, conflict, forbidden, notFound, unprocessable } from '../../lib/errors';
 import { likeParam, pageParams, paginated } from '../../lib/pagination';
 import { hashPassword } from '../auth/service';
 
@@ -13,12 +13,39 @@ interface UserInput {
   phone: string | null;
   jobTitle: string | null;
   roleIds: number[];
+  accessExpiresOn: string | null;
 }
 
 async function assertRolesExist(roleIds: number[]) {
-  const { rows } = await pool.query('SELECT id, code FROM roles WHERE id = ANY($1::int[])', [roleIds]);
+  const { rows } = await pool.query(
+    `SELECT r.id, r.code, COALESCE(array_agg(p.code) FILTER (WHERE p.code IS NOT NULL), '{}') AS permissions
+       FROM roles r LEFT JOIN role_permissions rp ON rp.role_id = r.id LEFT JOIN permissions p ON p.id = rp.permission_id
+      WHERE r.id = ANY($1::int[]) GROUP BY r.id`,
+    [roleIds],
+  );
   if (rows.length !== new Set(roleIds).size) throw badRequest('One of the selected roles does not exist.');
-  return rows as { id: number; code: string }[];
+  return rows as { id: number; code: string; permissions: string[] }[];
+}
+
+/** Permissions a user currently holds through their roles. */
+async function permissionsOf(userId: number): Promise<string[]> {
+  const { rows } = await pool.query(
+    `SELECT DISTINCT p.code FROM user_roles ur JOIN role_permissions rp ON rp.role_id = ur.role_id JOIN permissions p ON p.id = rp.permission_id
+      WHERE ur.user_id = $1`,
+    [userId],
+  );
+  return rows.map((r) => r.code);
+}
+
+/**
+ * No escalation: without roles.manage, staff can only manage accounts whose
+ * access is within their own (a manager cannot reset a Super Admin's
+ * password and sign in as them).
+ */
+async function assertCanManage(actor: Actor, userId: number) {
+  if (actor.permissions.has('roles.manage') || userId === actor.userId) return;
+  const extra = (await permissionsOf(userId)).filter((p) => !actor.permissions.has(p));
+  if (extra.length) throw forbidden('This account has access you do not have. Ask a Super Admin to manage it.');
 }
 
 async function activeBranch(tx: import('pg').PoolClient, branchId: number): Promise<number> {
@@ -28,10 +55,12 @@ async function activeBranch(tx: import('pg').PoolClient, branchId: number): Prom
   return branchId;
 }
 
-/** Only a Super Admin may grant the Super Admin role. */
-async function assertCanGrant(actor: Actor, roles: { code: string }[]) {
-  if (roles.some((r) => r.code === 'super_admin') && !actor.permissions.has('roles.manage')) {
-    throw unprocessable('Only a Super Admin can assign the Super Admin role.');
+/** Only a Super Admin may grant the Super Admin role, or any role carrying permissions the granter lacks. */
+async function assertCanGrant(actor: Actor, roles: { code: string; permissions: string[] }[]) {
+  if (actor.permissions.has('roles.manage')) return;
+  if (roles.some((r) => r.code === 'super_admin')) throw unprocessable('Only a Super Admin can assign the Super Admin role.');
+  if (roles.some((r) => r.permissions.some((p) => !actor.permissions.has(p)))) {
+    throw forbidden('You can only assign roles whose permissions you hold yourself.');
   }
 }
 
@@ -50,6 +79,7 @@ export async function listUsers(q: { page: number; pageSize: number; search?: st
   const { limit, offset } = pageParams(q.page, q.pageSize);
   const { rows } = await pool.query(
     `SELECT u.id, u.full_name, u.email, u.phone, u.job_title, u.status, u.last_login_at, u.created_at, u.branch_id,
+            u.mfa_enabled_at IS NOT NULL AS mfa_enabled, u.access_expires_on::text AS access_expires_on,
             (SELECT name FROM branches WHERE id = u.branch_id) AS branch_name,
             (u.locked_until IS NOT NULL AND u.locked_until > now()) AS locked,
             COALESCE(json_agg(json_build_object('id', r.id, 'code', r.code, 'name', r.name) ORDER BY r.name) FILTER (WHERE r.id IS NOT NULL), '[]') AS roles,
@@ -69,6 +99,7 @@ export async function listUsers(q: { page: number; pageSize: number; search?: st
 export async function getUser(id: number) {
   const { rows } = await pool.query(
     `SELECT u.id, u.full_name, u.email, u.phone, u.job_title, u.status, u.last_login_at, u.created_at, u.must_change_password,
+            u.mfa_enabled_at IS NOT NULL AS mfa_enabled, u.access_expires_on::text AS access_expires_on,
             u.branch_id, (SELECT name FROM branches WHERE id = u.branch_id) AS branch_name,
             (u.locked_until IS NOT NULL AND u.locked_until > now()) AS locked,
             COALESCE(json_agg(json_build_object('id', r.id, 'code', r.code, 'name', r.name)) FILTER (WHERE r.id IS NOT NULL), '[]') AS roles
@@ -97,16 +128,16 @@ export async function createUser(actor: Actor, input: UserInput & { password: st
     const dup = await tx.query('SELECT 1 FROM users WHERE lower(email) = lower($1)', [input.email]);
     if (dup.rowCount) throw conflict('A user with this email already exists.');
     const { rows } = await tx.query(
-      `INSERT INTO users (branch_id, full_name, email, phone, job_title, password_hash, must_change_password)
-       VALUES ($1,$2,$3,$4,$5,$6, TRUE) RETURNING id`,
-      [await activeBranch(tx, input.branchId ?? actor.branchId), input.fullName, input.email, input.phone, input.jobTitle, hash],
+      `INSERT INTO users (branch_id, full_name, email, phone, job_title, password_hash, must_change_password, access_expires_on)
+       VALUES ($1,$2,$3,$4,$5,$6, TRUE, $7) RETURNING id`,
+      [await activeBranch(tx, input.branchId ?? actor.branchId), input.fullName, input.email, input.phone, input.jobTitle, hash, input.accessExpiresOn],
     );
     const id = rows[0].id as number;
     await tx.query('INSERT INTO user_roles (user_id, role_id) SELECT $1, unnest($2::int[])', [id, input.roleIds]);
     await audit(tx, actor, {
       action: 'create', module: 'users', entityType: 'user', entityId: id,
       summary: `${actor.userName} created user ${input.fullName} (${input.email})`,
-      newValues: { fullName: input.fullName, email: input.email, roles: roles.map((r) => r.code) },
+      newValues: { fullName: input.fullName, email: input.email, roles: roles.map((r) => r.code), accessExpiresOn: input.accessExpiresOn },
     });
     return { id };
   });
@@ -115,6 +146,7 @@ export async function createUser(actor: Actor, input: UserInput & { password: st
 export async function updateUser(actor: Actor, id: number, input: UserInput & { status: 'active' | 'suspended' }) {
   const roles = await assertRolesExist(input.roleIds);
   await assertCanGrant(actor, roles);
+  await assertCanManage(actor, id);
   return withTransaction(async (tx) => {
     const before = await getUser(id);
     if (id === actor.userId && input.status === 'suspended') throw unprocessable('You cannot suspend your own account.');
@@ -130,8 +162,8 @@ export async function updateUser(actor: Actor, id: number, input: UserInput & { 
     const dup = await tx.query('SELECT 1 FROM users WHERE lower(email) = lower($1) AND id <> $2', [input.email, id]);
     if (dup.rowCount) throw conflict('A user with this email already exists.');
     await tx.query(
-      `UPDATE users SET full_name=$2, email=$3, phone=$4, job_title=$5, status=$6, branch_id=$7, updated_at=now() WHERE id=$1`,
-      [id, input.fullName, input.email, input.phone, input.jobTitle, input.status, await activeBranch(tx, input.branchId ?? before.branch_id)],
+      `UPDATE users SET full_name=$2, email=$3, phone=$4, job_title=$5, status=$6, branch_id=$7, access_expires_on=$8, updated_at=now() WHERE id=$1`,
+      [id, input.fullName, input.email, input.phone, input.jobTitle, input.status, await activeBranch(tx, input.branchId ?? before.branch_id), input.accessExpiresOn],
     );
     await tx.query('DELETE FROM user_roles WHERE user_id = $1', [id]);
     await tx.query('INSERT INTO user_roles (user_id, role_id) SELECT $1, unnest($2::int[])', [id, input.roleIds]);
@@ -143,17 +175,19 @@ export async function updateUser(actor: Actor, id: number, input: UserInput & { 
     if (before.status !== input.status) changes.push(`status ${before.status} → ${input.status}`);
     if (beforeRoles.join() !== afterRoles.join()) changes.push(`roles ${beforeRoles.join(', ')} → ${afterRoles.join(', ')}`);
     if (before.full_name !== input.fullName || before.email !== input.email) changes.push('details');
+    if ((before.access_expires_on ?? null) !== input.accessExpiresOn) changes.push(`access end date ${before.access_expires_on ?? 'none'} → ${input.accessExpiresOn ?? 'none'}`);
     await audit(tx, actor, {
       action: 'update', module: 'users', entityType: 'user', entityId: id,
       summary: `${actor.userName} updated user ${input.fullName}${changes.length ? `: ${changes.join('; ')}` : ''}`,
-      oldValues: { status: before.status, roles: beforeRoles, email: before.email },
-      newValues: { status: input.status, roles: afterRoles, email: input.email },
+      oldValues: { status: before.status, roles: beforeRoles, email: before.email, accessExpiresOn: before.access_expires_on },
+      newValues: { status: input.status, roles: afterRoles, email: input.email, accessExpiresOn: input.accessExpiresOn },
     });
     return { id };
   });
 }
 
 export async function adminResetPassword(actor: Actor, id: number, password: string) {
+  await assertCanManage(actor, id);
   const user = await getUser(id);
   const hash = await hashPassword(password);
   await withTransaction(async (tx) => {
@@ -170,6 +204,7 @@ export async function adminResetPassword(actor: Actor, id: number, password: str
 }
 
 export async function unlockUser(actor: Actor, id: number) {
+  await assertCanManage(actor, id);
   const user = await getUser(id);
   await pool.query(`UPDATE users SET failed_login_count = 0, locked_until = NULL WHERE id = $1`, [id]);
   await audit(pool, actor, { action: 'unlock', module: 'users', entityType: 'user', entityId: id, summary: `${actor.userName} unlocked ${user.full_name}` });
@@ -259,4 +294,23 @@ export async function deleteRole(actor: Actor, id: number) {
 export async function userOptions() {
   const { rows } = await pool.query(`SELECT id, full_name, job_title FROM users WHERE status = 'active' ORDER BY full_name`);
   return rows;
+}
+
+/** Clears a user's 2FA (lost phone) and signs them out everywhere; they set it up again at next sign-in. */
+export async function adminResetMfa(actor: Actor, id: number) {
+  if (id === actor.userId) throw unprocessable('Turn off your own two-factor authentication from My profile.');
+  await assertCanManage(actor, id);
+  const user = await getUser(id);
+  if (!user.mfa_enabled) throw unprocessable(`${user.full_name} does not use two-factor authentication.`);
+  await withTransaction(async (tx) => {
+    await tx.query(
+      `UPDATE users SET mfa_secret_enc = NULL, mfa_pending_secret_enc = NULL, mfa_enabled_at = NULL, mfa_last_step = NULL, mfa_recovery_hashes = '{}' WHERE id = $1`,
+      [id],
+    );
+    await tx.query(`UPDATE auth_sessions SET revoked_at = now(), revoked_reason = 'mfa_reset' WHERE user_id = $1 AND revoked_at IS NULL`, [id]);
+    await audit(tx, actor, {
+      action: 'mfa_reset', module: 'users', entityType: 'user', entityId: id,
+      summary: `${actor.userName} reset two-factor authentication for ${user.full_name} and signed them out`,
+    });
+  });
 }

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { passwordRules } from './auth';
-import { optionalPhone, optionalText, requiredText } from './common';
+import { optionalIsoDate, optionalPhone, optionalText, requiredText } from './common';
 
 export const branchSchema = z.object({
   code: z.string().trim().toUpperCase().min(2, 'Code is required').max(20).regex(/^[A-Z0-9-]+$/, 'Letters, numbers and hyphens only'),
@@ -20,6 +20,8 @@ export const userCreateSchema = z.object({
   jobTitle: optionalText(80),
   roleIds: z.array(z.coerce.number().int().positive()).min(1, 'Assign at least one role'),
   password: passwordRules,
+  /** Optional last day of access (temporary or locum staff). */
+  accessExpiresOn: optionalIsoDate('Access end date'),
 });
 
 export const userUpdateSchema = z.object({
@@ -30,6 +32,7 @@ export const userUpdateSchema = z.object({
   jobTitle: optionalText(80),
   roleIds: z.array(z.coerce.number().int().positive()).min(1, 'Assign at least one role'),
   status: z.enum(['active', 'suspended']),
+  accessExpiresOn: optionalIsoDate('Access end date'),
 });
 
 export const adminResetPasswordSchema = z.object({ password: passwordRules });

@@ -3,11 +3,11 @@ import { z } from 'zod';
 import { actorOf, requirePermission } from '../../middleware/auth';
 import { audit } from '../../lib/audit';
 import { pool } from '../../db/pool';
-import { backupPath, createBackup, listBackups } from './service';
+import { backupPath, backupProtection, createBackup, listBackups } from './service';
 
 export const backupsRouter = Router();
 backupsRouter.use(requirePermission('backups.manage'));
-backupsRouter.get('/', async (_req, res) => res.json(await listBackups()));
+backupsRouter.get('/', async (_req, res) => res.json({ backups: await listBackups(), ...backupProtection }));
 backupsRouter.post('/', async (req, res) => res.status(201).json(await createBackup(actorOf(req))));
 backupsRouter.get('/:name', async (req, res) => {
   const name = z.string().max(64).parse(req.params.name);

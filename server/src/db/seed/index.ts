@@ -513,7 +513,8 @@ async function main() {
   for (const s of allSales.filter((x) => x.daysAgo > 2 && x.daysAgo < 90)) {
     if (returnsDone >= 9 || rand() > 0.006) continue;
     const items = (await pool.query('SELECT id, quantity FROM sale_items WHERE sale_id = $1 ORDER BY id LIMIT 1', [s.id])).rows;
-    const sale = (await pool.query('SELECT customer_id FROM sales WHERE id = $1', [s.id])).rows[0];
+    const sale = (await pool.query('SELECT customer_id, insurance_scheme_id FROM sales WHERE id = $1', [s.id])).rows[0];
+    if (sale.insurance_scheme_id) continue; // insured lines are settled with the insurer, not at the counter
     const condition = rand() < 0.7 ? 'resellable' : 'damaged';
     await processReturn(as('halima', at(dayAt(s.daysAgo - 1), 13)), {
       saleId: s.id, reason: pick(reasons), refundMethod: sale.customer_id && rand() < 0.3 ? 'store_credit' : 'cash', notes: null,

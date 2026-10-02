@@ -12,7 +12,7 @@ export function useRoles() {
   return useQuery({ queryKey: ['roles'], queryFn: () => api.get<{ roles: RoleOption[]; catalogue: { key: string; label: string; permissions: { code: string; label: string }[] }[] }>('/roles') });
 }
 
-export function UserFormModal({ open, onClose, user, onSaved }: { open: boolean; onClose: () => void; user?: { id: number; fullName: string; email: string; phone: string | null; jobTitle: string | null; status: string; branchId?: number; roles: { id: number }[] } | null; onSaved?: (id: number) => void }) {
+export function UserFormModal({ open, onClose, user, onSaved }: { open: boolean; onClose: () => void; user?: { id: number; fullName: string; email: string; phone: string | null; jobTitle: string | null; status: string; branchId?: number; accessExpiresOn?: string | null; roles: { id: number }[] } | null; onSaved?: (id: number) => void }) {
   const qc = useQueryClient();
   const toast = useToast();
   const { can } = useAuth();
@@ -25,8 +25,8 @@ export function UserFormModal({ open, onClose, user, onSaved }: { open: boolean;
     if (!open) return;
     setError(null);
     form.reset((user
-      ? { fullName: user.fullName, email: user.email, phone: user.phone ?? '', jobTitle: user.jobTitle ?? '', status: user.status, roleIds: user.roles.map((r) => r.id), branchId: user.branchId ?? '' }
-      : { fullName: '', email: '', phone: '', jobTitle: '', password: '', roleIds: [], branchId: '' }) as never);
+      ? { fullName: user.fullName, email: user.email, phone: user.phone ?? '', jobTitle: user.jobTitle ?? '', status: user.status, roleIds: user.roles.map((r) => r.id), branchId: user.branchId ?? '', accessExpiresOn: user.accessExpiresOn ?? '' }
+      : { fullName: '', email: '', phone: '', jobTitle: '', password: '', roleIds: [], branchId: '', accessExpiresOn: '' }) as never);
   }, [open, user, form]);
   const save = useMutation({ mutationFn: (body: unknown) => (user ? api.put<{ id: number }>(`/users/${user.id}`, body) : api.post<{ id: number }>('/users', body)) });
   const submit = form.handleSubmit(async (data) => {
@@ -68,6 +68,9 @@ export function UserFormModal({ open, onClose, user, onSaved }: { open: boolean;
         ) : (
           <Field label="Status">{(id) => <Select id={id} {...r('status')}><option value="active">Active</option><option value="suspended">Suspended — cannot sign in</option></Select>}</Field>
         )}
+        <Field label="Access ends" error={(errors as Record<string, { message?: string }>).accessExpiresOn?.message} hint="Optional — for temporary or locum staff. They cannot sign in after this day.">
+          {(id) => <Input id={id} type="date" {...r('accessExpiresOn' as never)} />}
+        </Field>
         <div className="sm:col-span-2">
           <p className="mb-1.5 text-[12.5px] font-medium">Roles <span className="text-danger">*</span></p>
           {errors.roleIds?.message && <p className="mb-1.5 text-[12px] text-danger">{errors.roleIds.message}</p>}

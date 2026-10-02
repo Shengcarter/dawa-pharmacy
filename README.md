@@ -106,14 +106,17 @@ All demo users share the password **`Upendo@2026`**:
 ### Docker (recommended)
 
 ```bash
-cp .env.example .env        # set DATABASE_PASSWORD, JWT_ACCESS_SECRET, APP_URL
+cp .env.example .env        # fill in every secret: see the comments in the file
 docker compose up -d --build
 docker compose exec -it app node dist/create-admin.js   # first Super Admin
 ```
 
-Open `http://<server-ip>:4000` from any computer on the pharmacy network. The API serves the built web app,
-applies migrations on start, and stores uploads and backups in the `storage` volume. The container runs as
-the unprivileged `node` user.
+Open `https://<SITE_ADDRESS>` from any computer on the pharmacy network. Caddy terminates HTTPS (a free
+certificate for a domain, or its own certificate for a LAN address — see [docs/SECURITY.md](docs/SECURITY.md));
+the app and database are not exposed directly. The app applies migrations on start as the schema owner and runs
+as a data-only database role, stores uploads and backups in the `storage` volume and copies every backup to
+`BACKUP_COPY_HOST_DIR`. The container runs as the unprivileged `node` user. Add malware scanning of uploads with
+`docker compose --profile scan up -d` and `CLAMAV_HOST=clamav`.
 
 To create the admin without prompts (e.g. from a provisioning script), pass the details as variables:
 `docker compose exec -e ADMIN_NAME='…' -e ADMIN_EMAIL='…' -e ADMIN_PASSWORD='…' app node dist/create-admin.js`.
@@ -136,7 +139,12 @@ API settings are environment variables (validated at start-up; the process refus
 
 | Variable | Purpose |
 | --- | --- |
-| `DATABASE_URL` | PostgreSQL connection string |
+| `DATABASE_URL` | PostgreSQL connection for the application (production: a data-only role) |
+| `MIGRATIONS_DATABASE_URL` | Optional schema-owner connection for migrations and backups (least privilege) |
+| `DATA_ENCRYPTION_KEY` | 32 random bytes, base64; encrypts 2FA secrets. Required in production |
+| `BACKUP_ENCRYPTION_KEY` | 32 random bytes, base64; encrypts backups. Keep a copy off the server |
+| `BACKUP_COPY_DIR` | Second location for every backup (another disk, NAS mount, synced folder) |
+| `CLAMAV_HOST`, `CLAMAV_PORT` | ClamAV daemon for scanning uploads (fail closed when set) |
 | `JWT_ACCESS_SECRET` | Secret for access tokens, at least 32 random characters |
 | `ACCESS_TOKEN_TTL_MINUTES` | Access token lifetime (default 15) |
 | `APP_URL` | Public URL, used in password-reset emails |
@@ -255,25 +263,20 @@ create custom roles. Permissions are enforced by the API on every route; the int
 
 ## Security
 
-* Passwords hashed with **bcrypt** (cost 12); strength rules shared by client and server; never logged.
-* **Short-lived JWT access tokens** kept in memory only, plus **rotating refresh tokens** in an `HttpOnly`,
-  `SameSite=Strict` cookie, stored as SHA-256 hashes. Re-use of a rotated token revokes the whole session family;
-  a token presented within 30 seconds of its rotation is treated as another tab refreshing at the same moment and
-  gets an access token for the current session (no new cookie). Signing out ends every tab of that sign-in.
-  Each request re-checks that the session and user are still active, so logout, suspension and password changes take
-  effect immediately.
-* Account **lock-out** after 5 failed sign-ins (15 minutes), sign-in rate limiting, password-reset tokens that are
-  single-use and expire after 30 minutes, generic responses that do not reveal whether an email exists.
-* **CSRF**: cookie-authenticated endpoints require a custom header that browsers cannot send cross-site, on top of
-  `SameSite=Strict`.
-* **SQL injection**: parameterised queries everywhere; sort columns are whitelisted.
-* **XSS**: React escaping, strict Content-Security-Policy (`script-src 'self'`), Helmet security headers.
-* **CSV exports** neutralise spreadsheet formula injection.
-* **Uploads**: type and size checks, random file names, receipts served only to authorised users.
-* **Audit**: price changes, stock adjustments, sales, returns, receipts, payments, purchase-order decisions, user,
-  role and settings changes are logged with old and new values, user, IP and device. The audit and stock ledgers
-  cannot be edited from the application.
-* Secrets come from environment variables only; nothing sensitive is shipped to the browser.
+The full description — controls, HTTPS, database roles, secrets and what to do if one leaks, backup and restore,
+dependency updates and the production readiness checklist — is in **[docs/SECURITY.md](docs/SECURITY.md)**. In short:
+
+* **Passwords** hashed with bcrypt; **two-factor authentication** (authenticator app, recovery codes), required for
+  administrators when the policy is on; account lock-out; rate limits on sign-in, codes, resets and sensitive actions.
+* **Sessions**: in-memory access tokens, rotating `HttpOnly`/`SameSite=Strict` refresh cookies, absolute and
+  inactivity time-outs, optional account end dates, immediate effect of logout, suspension and password changes.
+* **Authorization** on the server for every route, branch and own-record scoping, and no privilege escalation
+  through user administration.
+* **Input** validated with shared Zod schemas; **parameterised SQL** only; CSRF header check; strict CSP and other
+  security headers; uploads type-checked by content, sandboxed and optionally virus-scanned (ClamAV).
+* **Append-only audit log** (enforced by the database) for security and business events, including data exports.
+* **Encrypted, off-server backups** with a tested restore procedure; **least-privilege** database roles; secrets only
+  in environment variables (production refuses example values); CI dependency audit and secret scanning.
 
 ## API overview
 

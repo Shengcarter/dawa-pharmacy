@@ -76,7 +76,7 @@ productsRouter.post('/:id/barcode', requirePermission('products.manage'), async 
   res.json(await catalog.generateBarcode(actorOf(req), idParam(req.params.id)));
 });
 
-productsRouter.post('/:id/image', requirePermission('products.manage'), productImageUpload, async (req, res) => {
+productsRouter.post('/:id/image', requirePermission('products.manage'), ...productImageUpload, async (req, res) => {
   if (!req.file) throw badRequest('Choose an image to upload.');
   const id = idParam(req.params.id);
   const { rows } = await pool.query('SELECT image_path FROM products WHERE id = $1', [id]);

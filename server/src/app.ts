@@ -10,7 +10,7 @@ import { PUBLIC_DIR } from './lib/uploads';
 import { authenticate } from './middleware/auth';
 import { camelCaseResponses } from './middleware/camelCase';
 import { errorHandler, notFoundHandler } from './middleware/error';
-import { apiLimiter } from './middleware/rateLimit';
+import { apiLimiter, sensitiveLimiter } from './middleware/rateLimit';
 import { pool } from './db/pool';
 import { authRouter } from './modules/auth/routes';
 import { rolesRouter, usersRouter } from './modules/users/routes';
@@ -55,8 +55,16 @@ export function createApp() {
         },
       },
       crossOriginResourcePolicy: { policy: 'same-origin' },
+      // HSTS only means something over HTTPS; on a plain-HTTP LAN install it would be ignored anyway.
+      strictTransportSecurity: env.cookieSecure ? { maxAge: 31_536_000, includeSubDomains: true } : false,
+      referrerPolicy: { policy: 'no-referrer' },
     }),
   );
+  // Browser features the app never uses are switched off for it and anything it might embed.
+  app.use((_req, res, next) => {
+    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), bluetooth=(), interest-cohort=()');
+    next();
+  });
   if (env.CORS_ORIGIN) {
     const allowed = env.CORS_ORIGIN.split(',').map((o) => o.trim());
     app.use((req, res, next) => {
@@ -81,7 +89,10 @@ export function createApp() {
     res.json({ status: 'ok' });
   });
 
-  app.use('/uploads', express.static(PUBLIC_DIR, { maxAge: '7d', index: false, dotfiles: 'deny' }));
+  app.use('/uploads', express.static(PUBLIC_DIR, {
+    maxAge: '7d', index: false, dotfiles: 'deny',
+    setHeaders: (res) => res.setHeader('Content-Security-Policy', "default-src 'none'; img-src 'self'; sandbox"),
+  }));
 
   const api = Router();
   api.use(apiLimiter);
@@ -92,6 +103,16 @@ export function createApp() {
 
   const secured = Router();
   secured.use(authenticate);
+  // Per-user limit on sensitive actions: user and role changes, settings, backups and data exports.
+  secured.use((req, res, next) => {
+    const write = req.method !== 'GET';
+    const sensitive =
+      (write && /^\/(users|roles|settings|backups|branches)(\/|$)/.test(req.path)) ||
+      req.path.startsWith('/backups/') ||
+      req.query.format === 'csv' ||
+      req.path.endsWith('/export');
+    return sensitive ? sensitiveLimiter(req, res, next) : next();
+  });
   secured.use('/users', usersRouter);
   secured.use('/roles', rolesRouter);
   secured.use('/products', productsRouter);

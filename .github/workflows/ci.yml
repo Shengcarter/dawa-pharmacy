@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    # Weekly, so newly published advisories are caught even without code changes.
+    - cron: '17 4 * * 1'
+
+permissions:
+  contents: read
 
 jobs:
   check:
@@ -30,3 +36,21 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # scan the whole history, not just the latest commit
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Fails on any known high or critical vulnerability in installed packages.
+      - name: Dependency audit
+        run: npm audit --audit-level=high
+      # Fails if a password, key or token appears anywhere in the repository history.
+      - name: Secret scan (gitleaks)
+        run: docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:v8.28.0 detect --source /repo --redact --no-banner

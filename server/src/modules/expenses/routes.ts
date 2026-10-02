@@ -37,7 +37,7 @@ expensesRouter.post('/:id/void', requirePermission('expenses.manage'), async (re
   await expenses.voidExpense(actorOf(req), idParam(req.params.id), reason);
   res.json({ message: 'Expense voided.' });
 });
-expensesRouter.post('/:id/receipt', requirePermission('expenses.manage'), receiptUpload, async (req, res) => {
+expensesRouter.post('/:id/receipt', requirePermission('expenses.manage'), ...receiptUpload, async (req, res) => {
   if (!req.file) throw badRequest('Choose a file to upload.');
   const id = idParam(req.params.id);
   const before = await expenses.getExpense(actorOf(req), id);
@@ -49,5 +49,8 @@ expensesRouter.get('/:id/receipt', requirePermission('expenses.view'), async (re
   const expense = await expenses.getExpense(actorOf(req), idParam(req.params.id));
   if (!expense.receipt_path) throw notFound('Receipt');
   res.setHeader('Cache-Control', 'private, no-store');
+  // Uploaded content never runs as part of the app: sandboxed, and PDFs download instead of opening inline.
+  res.setHeader('Content-Security-Policy', "default-src 'none'; img-src 'self'; sandbox");
+  if (expense.receipt_path.endsWith('.pdf')) res.attachment(`receipt-${expense.expense_no}.pdf`);
   res.sendFile(safeResolve(PRIVATE_DIR, expense.receipt_path));
 });

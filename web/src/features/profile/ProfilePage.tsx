@@ -12,25 +12,31 @@ import { Page } from '@/components/layout/AppLayout';
 import { Alert, Badge, Button, Card, Field, Input, PageHeader, Switch, Tabs, useToast } from '@/components/ui';
 import { LoginActivityTable, type LoginEvent } from '../users/UserDetailPage';
 
-type Tab = 'profile' | 'password' | 'preferences' | 'activity';
+type Tab = 'profile' | 'password' | 'security' | 'preferences' | 'activity';
 
 export function ProfilePage() {
   const user = useUser();
   const [params, setParams] = useSearchParams();
   const tab = (params.get('tab') as Tab) ?? 'profile';
   const required = params.get('required') === '1' || user.mustChangePassword;
+  // A password change comes first, then 2FA set-up when policy requires it.
+  const mfaRequired = !required && user.mfaSetupRequired;
+  const forced: Tab | null = required ? 'password' : mfaRequired ? 'security' : null;
   return (
     <Page>
       <PageHeader title="My profile" description={`${user.email} · ${user.roles.map((r) => r.name).join(', ')}`} />
       {required && <Alert tone="warning" className="mb-4" title="Choose a new password to continue">Your password was set by an administrator. Choose your own before using the system.</Alert>}
-      <Tabs className="mb-4" value={required ? 'password' : tab} onChange={(t) => !required && setParams({ tab: t })} tabs={[
-        { value: 'profile', label: 'Profile' }, { value: 'password', label: 'Password' }, { value: 'preferences', label: 'Preferences' }, { value: 'activity', label: 'Sign-in activity' },
+      {mfaRequired && <Alert tone="warning" className="mb-4" title="Set up two-factor authentication to continue">Your role can manage users, settings or backups, so the pharmacy requires a second sign-in step for your account.</Alert>}
+      <Tabs className="mb-4" value={forced ?? tab} onChange={(t) => !forced && setParams({ tab: t })} tabs={[
+        { value: 'profile', label: 'Profile' }, { value: 'password', label: 'Password' }, { value: 'security', label: 'Two-factor' },
+        { value: 'preferences', label: 'Preferences' }, { value: 'activity', label: 'Sign-in activity' },
       ]} />
       <div className="max-w-2xl">
-        {(required || tab === 'password') && <PasswordForm />}
-        {!required && tab === 'profile' && <ProfileForm />}
-        {!required && tab === 'preferences' && <Preferences />}
-        {!required && tab === 'activity' && <Activity />}
+        {(required || (!forced && tab === 'password')) && <PasswordForm />}
+        {(mfaRequired || (!forced && tab === 'security')) && <TwoFactor />}
+        {!forced && tab === 'profile' && <ProfileForm />}
+        {!forced && tab === 'preferences' && <Preferences />}
+        {!forced && tab === 'activity' && <Activity />}
       </div>
     </Page>
   );
@@ -135,4 +141,114 @@ function Preferences() {
 function Activity() {
   const { data } = useQuery({ queryKey: ['my-activity'], queryFn: () => api.get<LoginEvent[]>('/auth/activity') });
   return <Card title="Recent sign-ins" description="If you see activity you don't recognise, change your password and tell your manager." flush><LoginActivityTable rows={data ?? []} /></Card>;
+}
+
+function TwoFactor() {
+  const user = useUser();
+  const { setUser } = useAuth();
+  const toast = useToast();
+  const navigate = useNavigate();
+  const [setup, setSetup] = useState<{ secret: string; otpauthUrl: string; qrDataUrl: string } | null>(null);
+  const [codes, setCodes] = useState<string[] | null>(null);
+  const [code, setCode] = useState('');
+  const [password, setPassword] = useState('');
+  const [mode, setMode] = useState<'idle' | 'disable' | 'regenerate'>('idle');
+  const [error, setError] = useState<string | null>(null);
+  const reset = () => { setCode(''); setPassword(''); setError(null); };
+  const refreshUser = async () => setUser(await api.get<AuthUser>('/auth/me'));
+
+  const start = useMutation({
+    mutationFn: () => api.post<{ secret: string; otpauthUrl: string; qrDataUrl: string }>('/auth/mfa/setup'),
+    onSuccess: (r) => { reset(); setSetup(r); },
+    onError: (e) => setError((e as Error).message),
+  });
+  const enable = useMutation({
+    mutationFn: () => api.post<{ recoveryCodes: string[] }>('/auth/mfa/enable', { code, currentPassword: password }),
+    onSuccess: async (r) => { setSetup(null); reset(); setCodes(r.recoveryCodes); await refreshUser(); toast.success('Two-factor authentication is on'); },
+    onError: (e) => setError((e as Error).message),
+  });
+  const disable = useMutation({
+    mutationFn: () => api.post('/auth/mfa/disable', { code, currentPassword: password }),
+    onSuccess: async () => { setMode('idle'); reset(); await refreshUser(); toast.success('Two-factor authentication is off'); },
+    onError: (e) => setError((e as Error).message),
+  });
+  const regenerate = useMutation({
+    mutationFn: () => api.post<{ recoveryCodes: string[] }>('/auth/mfa/recovery-codes', { code }),
+    onSuccess: (r) => { setMode('idle'); reset(); setCodes(r.recoveryCodes); },
+    onError: (e) => setError((e as Error).message),
+  });
+
+  if (codes) {
+    return (
+      <Card title="Save your recovery codes">
+        <Alert tone="warning" className="mb-4">Each code works once, if you lose your phone. Store them somewhere safe (printed, or in a password manager). They will not be shown again.</Alert>
+        <div className="grid grid-cols-2 gap-2 rounded-md border border-line bg-subtle p-4 font-mono text-[14px] sm:grid-cols-5">
+          {codes.map((c) => <span key={c}>{c}</span>)}
+        </div>
+        <div className="mt-4 flex justify-end gap-2">
+          <Button onClick={() => navigator.clipboard.writeText(codes.join('\n')).then(() => toast.success('Copied')).catch(() => undefined)}>Copy</Button>
+          <Button variant="primary" onClick={() => { setCodes(null); if (window.location.search.includes('required')) navigate('/'); }}>I have saved them</Button>
+        </div>
+      </Card>
+    );
+  }
+
+  if (setup) {
+    return (
+      <Card title="Set up your authenticator app">
+        <ol className="mb-4 list-decimal space-y-1 pl-5 text-[13px] text-muted">
+          <li>Install an authenticator app (Google Authenticator, Microsoft Authenticator, Authy…).</li>
+          <li>Scan this QR code with it, or type the key by hand.</li>
+          <li>Enter the 6-digit code it shows, and your password.</li>
+        </ol>
+        <div className="flex flex-wrap items-start gap-5">
+          <img src={setup.qrDataUrl} alt="QR code for your authenticator app" className="size-44 rounded border border-line bg-white p-1" />
+          <form className="min-w-[240px] flex-1 space-y-3" onSubmit={(e) => { e.preventDefault(); enable.mutate(); }}>
+            {error && <Alert tone="danger">{error}</Alert>}
+            <Field label="Key (if you cannot scan)">{(id) => <Input id={id} readOnly value={setup.secret.replace(/(.{4})/g, '$1 ').trim()} className="font-mono text-[12px]" />}</Field>
+            <Field label="6-digit code">{(id) => <Input id={id} autoFocus inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))} className="font-mono tracking-[0.3em]" />}</Field>
+            <Field label="Your password">{(id) => <Input id={id} type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} />}</Field>
+            <div className="flex justify-end gap-2">
+              <Button onClick={() => { setSetup(null); reset(); }}>Cancel</Button>
+              <Button type="submit" variant="primary" loading={enable.isPending} disabled={code.length !== 6 || !password}>Turn on</Button>
+            </div>
+          </form>
+        </div>
+      </Card>
+    );
+  }
+
+  if (!user.mfaEnabled) {
+    return (
+      <Card title="Two-factor authentication">
+        {error && <Alert tone="danger" className="mb-3">{error}</Alert>}
+        <p className="text-[13px] text-muted">Signing in will need your password and a 6-digit code from an app on your phone, so a stolen password alone is not enough.</p>
+        <div className="mt-4 flex justify-end"><Button variant="primary" loading={start.isPending} onClick={() => start.mutate()}>Set up two-factor authentication</Button></div>
+      </Card>
+    );
+  }
+
+  return (
+    <Card title="Two-factor authentication" actions={<Badge tone="success" dot>On</Badge>}>
+      <p className="text-[13px] text-muted">Each sign-in asks for a code from your authenticator app. If you lose your phone, use a recovery code, or ask an administrator to reset it.</p>
+      {mode !== 'idle' ? (
+        <form className="mt-4 space-y-3" onSubmit={(e) => { e.preventDefault(); (mode === 'disable' ? disable : regenerate).mutate(); }}>
+          {error && <Alert tone="danger">{error}</Alert>}
+          <Field label="Current code (or a recovery code)">{(id) => <Input id={id} autoFocus autoComplete="one-time-code" maxLength={11} value={code} onChange={(e) => setCode(e.target.value)} className="font-mono" />}</Field>
+          {mode === 'disable' && <Field label="Your password">{(id) => <Input id={id} type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} />}</Field>}
+          <div className="flex justify-end gap-2">
+            <Button onClick={() => { setMode('idle'); reset(); }}>Cancel</Button>
+            <Button type="submit" variant={mode === 'disable' ? 'danger' : 'primary'} loading={disable.isPending || regenerate.isPending} disabled={code.trim().length < 6 || (mode === 'disable' && !password)}>
+              {mode === 'disable' ? 'Turn off' : 'Generate new codes'}
+            </Button>
+          </div>
+        </form>
+      ) : (
+        <div className="mt-4 flex flex-wrap justify-end gap-2">
+          <Button onClick={() => setMode('regenerate')}>New recovery codes</Button>
+          <Button variant="danger" onClick={() => setMode('disable')}>Turn off</Button>
+        </div>
+      )}
+    </Card>
+  );
 }

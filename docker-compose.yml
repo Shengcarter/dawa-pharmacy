@@ -1,8 +1,9 @@
-# Dawa Pharmacy — single-server deployment
-#   1. cp .env.example .env   and set the passwords/secrets
+# Dawa Pharmacy — single-server deployment with HTTPS
+#   1. cp .env.example .env   and fill in every secret (see the comments there)
 #   2. docker compose up -d --build
 #   3. docker compose exec app node dist/create-admin.js   (first time only)
-#   4. open http://<server-ip>:4000
+#   4. open https://<SITE_ADDRESS>
+# Optional malware scanning of uploads: docker compose --profile scan up -d   (and set CLAMAV_HOST=clamav)
 name: dawa
 
 services:
@@ -10,15 +11,19 @@ services:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_DB: dawa
-      POSTGRES_USER: dawa
-      POSTGRES_PASSWORD: ${DATABASE_PASSWORD:?Set DATABASE_PASSWORD in .env}
+      # Superuser: used only by the init script below, never by the application.
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:?Set POSTGRES_SUPERUSER_PASSWORD in .env}
+      DATABASE_OWNER_PASSWORD: ${DATABASE_OWNER_PASSWORD:?Set DATABASE_OWNER_PASSWORD in .env}
+      DATABASE_APP_PASSWORD: ${DATABASE_APP_PASSWORD:?Set DATABASE_APP_PASSWORD in .env}
     volumes:
       - db-data:/var/lib/postgresql/data
+      - ./docker/db-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U dawa']
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d dawa']
       interval: 5s
       retries: 20
+    # Not published: only the app can reach the database.
 
   app:
     build:
@@ -27,15 +32,46 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      DATABASE_URL: postgres://dawa:${DATABASE_PASSWORD}@db:5432/dawa
-    ports:
-      - '${HTTP_PORT:-4000}:4000'
+      NODE_ENV: production
+      DATABASE_URL: postgres://dawa_app:${DATABASE_APP_PASSWORD}@db:5432/dawa
+      MIGRATIONS_DATABASE_URL: postgres://dawa_owner:${DATABASE_OWNER_PASSWORD}@db:5432/dawa
+      COOKIE_SECURE: 'true'
+      TRUST_PROXY: '1'
+      BACKUP_COPY_DIR: /backup-copy
     volumes:
       - storage:/data
+      # A different disk, NAS share or synced folder on the host (BACKUP_COPY_HOST_DIR).
+      - ${BACKUP_COPY_HOST_DIR:?Set BACKUP_COPY_HOST_DIR in .env}:/backup-copy
     depends_on:
       db:
         condition: service_healthy
+    # Not published: staff reach it through Caddy over HTTPS.
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:?Set SITE_ADDRESS in .env}
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - app
+
+  clamav:
+    image: clamav/clamav:stable
+    restart: unless-stopped
+    profiles: ['scan']
+    volumes:
+      - clamav-db:/var/lib/clamav
 
 volumes:
   db-data:
   storage:
+  caddy-data:
+  caddy-config:
+  clamav-db:

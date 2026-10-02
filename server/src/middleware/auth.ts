@@ -1,11 +1,19 @@
 import type { NextFunction, Request, Response } from 'express';
-import type { Permission } from '@dawa/shared';
+import { todayIn, type Permission } from '@dawa/shared';
 import { pool } from '../db/pool';
 import type { Actor } from '../lib/actor';
-import { forbidden, unauthorized } from '../lib/errors';
+import { AppError, forbidden, unauthorized } from '../lib/errors';
+import { mfaRequiredFor } from '../modules/auth/service';
+import { getSettings } from '../modules/settings/service';
 import { verifyAccessToken } from '../lib/tokens';
 
 export const clientIp = (req: Request) => req.ip ?? req.socket.remoteAddress ?? null;
+
+/**
+ * While a password change or 2FA set-up is outstanding, only these endpoints
+ * work: the API enforces it, not just the interface.
+ */
+const SETUP_ALLOWED = [/^\/api\/auth\/(me|logout|change-password|preferences)$/, /^\/api\/auth\/mfa\//, /^\/api\/settings$/];
 
 /**
  * Verifies the bearer access token, then confirms in one query that the
@@ -22,7 +30,8 @@ export async function authenticate(req: Request, _res: Response, next: NextFunct
     throw unauthorized('Your session has expired. Please sign in again.');
   }
   const { rows } = await pool.query(
-    `SELECT u.id, u.full_name, u.branch_id,
+    `SELECT u.id, u.full_name, u.branch_id, u.must_change_password, u.mfa_enabled_at IS NOT NULL AS mfa_enabled,
+            u.access_expires_on::text AS access_expires_on,
             COALESCE(array_agg(DISTINCT p.code) FILTER (WHERE p.code IS NOT NULL), '{}') AS permissions
        FROM users u
        -- The token's session may since have been rotated (another tab refreshed);
@@ -38,6 +47,16 @@ export async function authenticate(req: Request, _res: Response, next: NextFunct
   );
   const row = rows[0];
   if (!row) throw unauthorized('Your session has ended. Please sign in again.');
+  if (row.access_expires_on && row.access_expires_on < todayIn((await getSettings()).general.timezone)) {
+    throw new AppError(403, 'ACCESS_EXPIRED', 'Your access to this system has ended. Contact your manager.');
+  }
+  const path = req.originalUrl.split('?')[0];
+  if (!SETUP_ALLOWED.some((r) => r.test(path))) {
+    if (row.must_change_password) throw new AppError(403, 'PASSWORD_CHANGE_REQUIRED', 'Change your temporary password before continuing.');
+    if (!row.mfa_enabled && (await mfaRequiredFor(row.permissions))) {
+      throw new AppError(403, 'MFA_SETUP_REQUIRED', 'Your role requires two-factor authentication. Set it up under My profile before continuing.');
+    }
+  }
   const actor: Actor = {
     userId: row.id,
     userName: row.full_name,
