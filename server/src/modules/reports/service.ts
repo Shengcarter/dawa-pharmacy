@@ -110,7 +110,7 @@ export async function productSales(actor: Actor, f: ReportFilters, limit = 500) 
 export async function profitAndLoss(actor: Actor, f: { from: string; to: string }) {
   const timezone = await tz();
   const p = [actor.branchId, timezone, f.from, f.to];
-  const [sales, returns, losses, expenses, monthly] = await Promise.all([
+  const [sales, returns, losses, expenses, monthly, writeOffs] = await Promise.all([
     pool.query(
       `SELECT COALESCE(sum(si.net_amount), 0) AS revenue, COALESCE(sum(si.tax_amount), 0) AS tax,
               COALESCE(sum(si.discount_amount), 0) AS discounts, COALESCE(sum(si.quantity * si.unit_cost), 0) AS cogs,
@@ -153,14 +153,24 @@ export async function profitAndLoss(actor: Actor, f: { from: string; to: string 
               WHERE mv.branch_id = $1 AND mv.movement_type IN ('adjustment_in','adjustment_out','damaged','expired','correction')
                 AND ${localDate('mv.created_at')} BETWEEN $3::date AND $4::date GROUP BY 1),
        e AS (SELECT date_trunc('month', expense_date)::date AS m, sum(amount) AS amount FROM expenses
-              WHERE branch_id = $1 AND voided_at IS NULL AND expense_date BETWEEN $3::date AND $4::date GROUP BY 1)
+              WHERE branch_id = $1 AND voided_at IS NULL AND expense_date BETWEEN $3::date AND $4::date GROUP BY 1),
+       w AS (SELECT date_trunc('month', ${localDate('cl.closed_at')})::date AS m, sum(written_off) AS amount FROM insurance_claims cl
+              WHERE cl.branch_id = $1 AND cl.written_off > 0 AND ${localDate('cl.closed_at')} BETWEEN $3::date AND $4::date GROUP BY 1)
        SELECT months.m AS month,
               COALESCE(s.revenue, 0) - COALESCE(r.revenue, 0) AS net_revenue,
               COALESCE(s.cogs, 0) - COALESCE(r.cost, 0) AS cogs,
               COALESCE(l.value, 0) AS stock_losses,
-              COALESCE(e.amount, 0) AS expenses
+              COALESCE(e.amount, 0) AS expenses,
+              COALESCE(w.amount, 0) AS claim_write_offs
          FROM months LEFT JOIN s ON s.m = months.m LEFT JOIN r ON r.m = months.m LEFT JOIN l ON l.m = months.m LEFT JOIN e ON e.m = months.m
+         LEFT JOIN w ON w.m = months.m
         ORDER BY months.m`,
+      p,
+    ),
+    // Insurer shortfalls written off when a claim was closed (amounts the pharmacy will never collect).
+    pool.query(
+      `SELECT COALESCE(sum(written_off), 0) AS amount, count(*)::int AS count FROM insurance_claims cl
+        WHERE cl.branch_id = $1 AND cl.written_off > 0 AND ${localDate('cl.closed_at')} BETWEEN $3::date AND $4::date`,
       p,
     ),
   ]);
@@ -175,7 +185,8 @@ export async function profitAndLoss(actor: Actor, f: { from: string; to: string 
   const lossLines = Object.fromEntries(losses.rows.map((l) => [l.movement_type, Number(l.value)]));
   const stockLosses = losses.rows.reduce((a, l) => a + c(l.value), 0);
   const opex = expenses.rows.reduce((a, e) => a + c(e.amount), 0);
-  const netProfit = grossProfit - stockLosses - opex;
+  const claimWriteOffs = c(writeOffs.rows[0].amount);
+  const netProfit = grossProfit - stockLosses - claimWriteOffs - opex;
   return {
     range: f,
     grossSales: fromCents(grossSales),
@@ -194,6 +205,8 @@ export async function profitAndLoss(actor: Actor, f: { from: string; to: string 
       found: lossLines.adjustment_in ?? 0,
       countCorrections: lossLines.correction ?? 0,
     },
+    claimWriteOffs: fromCents(claimWriteOffs),
+    claimWriteOffCount: writeOffs.rows[0].count,
     operatingExpenses: fromCents(opex),
     expensesByCategory: expenses.rows,
     netProfit: fromCents(netProfit),
@@ -202,7 +215,7 @@ export async function profitAndLoss(actor: Actor, f: { from: string; to: string 
     transactions: s.transactions,
     monthly: monthly.rows.map((m) => {
       const gp = c(m.net_revenue) - c(m.cogs);
-      return { ...m, gross_profit: fromCents(gp), net_profit: fromCents(gp - c(m.stock_losses) - c(m.expenses)) };
+      return { ...m, gross_profit: fromCents(gp), net_profit: fromCents(gp - c(m.stock_losses) - c(m.claim_write_offs) - c(m.expenses)) };
     }),
   };
 }

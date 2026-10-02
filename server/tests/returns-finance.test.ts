@@ -88,7 +88,7 @@ describe('returns and financial reporting', () => {
     expect(delta('operatingExpenses')).toBe(1500);
     expect(delta('netProfit')).toBe(4000 - 6000 - 1500);
     // Identity holds for the whole period.
-    expect(after.netProfit).toBeCloseTo(after.netRevenue - after.cogs - after.stockLosses - after.operatingExpenses, 2);
+    expect(after.netProfit).toBeCloseTo(after.netRevenue - after.cogs - after.stockLosses - after.claimWriteOffs - after.operatingExpenses, 2);
   });
 
   it('expenses are voided, never deleted, and drop out of totals', async () => {

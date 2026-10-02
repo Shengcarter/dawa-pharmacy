@@ -296,6 +296,7 @@ function InventoryReport({ data }: { data: { summary: { batches: number; units: 
 interface PL {
   grossSales: number; discounts: number; returns: number; returnCount: number; netRevenue: number; cogs: number; grossProfit: number; grossMargin: number; stockLosses: number;
   stockLossBreakdown: { damaged: number; expired: number; missing: number; found: number; countCorrections: number }; operatingExpenses: number;
+  claimWriteOffs: number; claimWriteOffCount: number;
   expensesByCategory: { category: string; amount: number }[]; netProfit: number; netMargin: number; taxCollected: number; transactions: number;
   monthly: { month: string; netRevenue: number; cogs: number; stockLosses: number; expenses: number; grossProfit: number; netProfit: number }[];
 }
@@ -330,10 +331,11 @@ function ProfitLossReport({ data }: { data: PL }) {
               {[b.expired && `expired ${money(b.expired)}`, b.damaged && `damaged ${money(b.damaged)}`, b.missing && `missing ${money(b.missing)}`, b.found && `found ${money(b.found)}`, b.countCorrections && `count corrections ${money(b.countCorrections)}`].filter(Boolean).join(' · ')}
             </p>
           ) : null}
+          {data.claimWriteOffs > 0 && row(`Insurance claims written off (${data.claimWriteOffCount})`, data.claimWriteOffs, { indent: true, negative: true })}
           {data.expensesByCategory.map((e) => row(e.category, Number(e.amount), { indent: true, negative: true }))}
           {row('Total operating expenses', data.operatingExpenses, { muted: true, negative: true })}
           {row('Net profit', data.netProfit, { strong: true, top: true })}
-          <p className="mt-3 border-t border-line pt-2.5 text-[12px] text-muted">VAT collected ({money(data.taxCollected)}) is owed to TRA and is not revenue. Discounts given: {money(data.discounts)} (already deducted from sales).</p>
+          <p className="mt-3 border-t border-line pt-2.5 text-[12px] text-muted">VAT collected ({money(data.taxCollected)}) is owed to TRA and is not revenue. Discounts given: {money(data.discounts)} (already deducted from sales).{data.claimWriteOffs > 0 && ' Claim write-offs are shown at the amount the insurer did not pay.'}</p>
         </Card>
         <Card title="Net profit by month">
           {months.length ? <SignedColumns data={months} currency={currency} valueLabel="Net profit" /> : <EmptyState compact title="No data" />}

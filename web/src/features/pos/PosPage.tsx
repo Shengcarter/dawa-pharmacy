@@ -2,14 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ClipboardList, Minus, PackageSearch, Plus, ScanLine, Search, ShoppingCart, Trash2, X } from 'lucide-react';
-import { computeCart, fromCents, nextPriceBreak, resolvePrice, toCents, type PriceBreak, type ResolvedPrice } from '@dawa/shared';
+import { computeCart, fromCents, insurerShareCents, nextPriceBreak, resolvePrice, toCents, type PriceBreak, type ResolvedPrice } from '@dawa/shared';
 import { api, ApiError } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { useDebounced } from '@/lib/hooks';
 import { useFormat } from '@/lib/settings';
 import { cn } from '@/lib/cn';
 import type { CustomerOption, PosProduct } from '@/lib/types';
-import { Alert, Badge, Button, EmptyState, IconButton, Input, Select, Spinner, useToast } from '@/components/ui';
+import { Alert, Badge, Button, EmptyState, IconButton, Input, Select, Spinner, Switch, useToast } from '@/components/ui';
 import { CustomerPicker } from '@/components/CustomerPicker';
 import { RxTag } from '@/components/StatusBadges';
 import { ReceiptModal } from '../sales/ReceiptModal';
@@ -40,14 +40,21 @@ export type LinePrice = ResolvedPrice & { next: PriceBreak | null };
  * customer, quantity prices on the product's total units, pack price), plus
  * the next quantity price the cashier could point out.
  */
-export function priceCart(cart: CartLine[], customer: CustomerOption | null): Map<string, LinePrice> {
+export function priceCart(
+  cart: CartLine[],
+  customer: CustomerOption | null,
+  insurance: { prices: Map<number, number>; coversUnlisted: boolean } | null = null,
+): Map<string, LinePrice> {
   const base = new Map<number, number>();
   for (const l of cart) base.set(l.product.id, (base.get(l.product.id) ?? 0) + l.quantity * (l.sellBy === 'pack' ? l.product.packSize : 1));
   const wholesaleCustomer = customer?.customerType === 'wholesale';
   return new Map(cart.map((l) => {
     const p = { ...l.product, priceBreaks: l.product.priceBreaks ?? [], wholesalePrice: l.product.wholesalePrice ?? null };
     const productBaseQuantity = base.get(l.product.id)!;
-    const r = resolvePrice(p, { sellBy: l.sellBy, productBaseQuantity, wholesaleCustomer });
+    const r = resolvePrice(p, {
+      sellBy: l.sellBy, productBaseQuantity, wholesaleCustomer,
+      insurance: insurance ? { unitPrice: insurance.prices.get(l.product.id) ?? null, coversUnlisted: insurance.coversUnlisted } : null,
+    });
     const perUnit = l.sellBy === 'pack' ? r.price / l.product.packSize : r.price;
     return [l.key, { ...r, next: nextPriceBreak(p, productBaseQuantity, perUnit) }];
   }));
@@ -112,11 +119,42 @@ export function PosPage() {
   const canDiscount = can('pos.discount', 'pos.discount_override');
   const canOverride = can('pos.discount_override');
 
-  const prices = useMemo(() => priceCart(cart, customer), [cart, customer]);
+  // ---- Insurance: scheme prices, the insurer's share and what the patient pays ----
+  const scheme = customer?.insurance ?? null;
+  const [billInsurance, setBillInsurance] = useState(false);
+  useEffect(() => setBillInsurance(Boolean(customer?.insurance?.hasMemberNo)), [customer?.id, customer?.insurance?.hasMemberNo]);
+  const insured = billInsurance && scheme !== null;
+  const cartIds = useMemo(() => [...new Set(cart.map((l) => l.product.id))].sort((a, b) => a - b), [cart]);
+  const schemePrices = useQuery({
+    queryKey: ['scheme-cart-prices', scheme?.id, cartIds],
+    queryFn: () => api.get<{ productId: number; unitPrice: number }[]>(`/insurance/schemes/${scheme!.id}/cart-prices`, { productIds: cartIds.join(',') }),
+    enabled: insured && cartIds.length > 0,
+    staleTime: 60_000,
+    placeholderData: (p) => p,
+  });
+  const insurancePricing = useMemo(
+    () => (insured ? { prices: new Map((schemePrices.data ?? []).map((r) => [r.productId, Number(r.unitPrice)])), coversUnlisted: scheme!.coverage === 'all_products' } : null),
+    [insured, schemePrices.data, scheme],
+  );
+  useEffect(() => {
+    // Insured sales take no discounts.
+    if (!insured) return;
+    setCartDiscount(0);
+    setCart((lines) => (lines.some((l) => l.discount > 0) ? lines.map((l) => ({ ...l, discount: 0 })) : lines));
+  }, [insured]);
+  const prices = useMemo(() => priceCart(cart, customer, insurancePricing), [cart, customer, insurancePricing]);
   const totals = useMemo(
     () => computeCart(cart.map((l) => ({ quantity: l.quantity, unitPriceCents: toCents(prices.get(l.key)!.price), discountCents: toCents(l.discount), taxRate: Number(l.product.taxRate) })), toCents(cartDiscount), taxInclusive),
     [cart, prices, cartDiscount, taxInclusive],
   );
+  const insuranceCents = insured
+    ? cart.reduce((a, l, i) => a + (prices.get(l.key)!.covered ? insurerShareCents(totals.lines[i].totalCents, Number(scheme!.copayPercent)) : 0), 0)
+    : 0;
+  const patientCents = totals.totalCents - insuranceCents;
+  const insuranceProblem = !insured || !cart.length ? null
+    : scheme!.requiresPrescription && !prescription ? `${scheme!.name} only pays for prescribed medicines. Attach the prescription, or switch insurance off.`
+    : insuranceCents === 0 && !schemePrices.isFetching ? `Nothing in the cart is covered by ${scheme!.name}. Switch insurance off to sell it.`
+    : null;
 
   const addProduct = useCallback(
     (product: PosProduct, quantity = 1) => {
@@ -319,6 +357,20 @@ export function PosPage() {
               <button aria-label="Detach prescription" onClick={() => setPrescription(null)} className="rounded p-0.5 hover:bg-white/40"><X className="size-3.5" /></button>
             </div>
           )}
+          {scheme && (
+            <div className="rounded-md border border-line px-2.5 py-2">
+              <Switch
+                checked={insured}
+                onChange={setBillInsurance}
+                disabled={!scheme.hasMemberNo}
+                label={`Bill ${scheme.name}`}
+                description={scheme.hasMemberNo
+                  ? `Scheme prices; the patient pays ${Number(scheme.copayPercent)}% co-pay${scheme.coverage === 'listed_only' ? ' and anything not on the list' : ''}.`
+                  : 'No member number on the patient record. Add it on the customer page to bill the insurance.'}
+              />
+            </div>
+          )}
+          {insuranceProblem && <Alert tone="warning">{insuranceProblem}</Alert>}
         </div>
 
         <div className="scrollbar-thin min-h-0 flex-1 overflow-y-auto">
@@ -395,8 +447,8 @@ export function PosPage() {
                       )}
                       <span className="ml-auto text-[13.5px] font-semibold num">{amount(fromCents(t.totalCents))}</span>
                     </div>
-                    <PriceNote line={l} price={prices.get(l.key)!} amount={amount} />
-                    {canDiscount && (
+                    <PriceNote line={l} price={prices.get(l.key)!} amount={amount} scheme={insured ? scheme!.name : null} />
+                    {canDiscount && !insured && (
                       <div className="mt-2 flex items-center gap-2 text-[12px]">
                         <span className="text-muted">Discount</span>
                         <Input
@@ -425,7 +477,7 @@ export function PosPage() {
           )}
           <dl className="space-y-1 text-[13px]">
             <div className="flex justify-between text-muted"><dt>Subtotal · {units} item{units === 1 ? '' : 's'}</dt><dd className="num">{money(fromCents(totals.subtotalCents))}</dd></div>
-            {canDiscount && cart.length > 0 && (
+            {canDiscount && !insured && cart.length > 0 && (
               <div className="flex items-center justify-between text-muted">
                 <dt>Cart discount</dt>
                 <dd>
@@ -442,12 +494,18 @@ export function PosPage() {
             )}
             {totals.discountCents > 0 && <div className="flex justify-between text-muted"><dt>Discount</dt><dd className="num">−{money(fromCents(totals.discountCents))}</dd></div>}
             {totals.taxCents > 0 && <div className="flex justify-between text-muted"><dt>{taxInclusive ? 'VAT (included)' : 'VAT'}</dt><dd className="num">{money(fromCents(totals.taxCents))}</dd></div>}
-            <div className="flex items-baseline justify-between pt-1.5"><dt className="text-[14px] font-semibold">Total</dt><dd className="text-[22px] font-semibold tracking-[-0.015em] num">{money(fromCents(totals.totalCents))}</dd></div>
+            {insured && cart.length > 0 && (
+              <>
+                <div className="flex justify-between text-muted"><dt>Sale total</dt><dd className="num">{money(fromCents(totals.totalCents))}</dd></div>
+                <div className="flex justify-between text-brand-700"><dt>{scheme!.name} pays</dt><dd className="num">−{money(fromCents(insuranceCents))}</dd></div>
+              </>
+            )}
+            <div className="flex items-baseline justify-between pt-1.5"><dt className="text-[14px] font-semibold">{insured && cart.length > 0 ? 'Patient pays' : 'Total'}</dt><dd className="text-[22px] font-semibold tracking-[-0.015em] num">{money(fromCents(patientCents))}</dd></div>
           </dl>
           <div className="mt-3 flex gap-2">
             <Button size="lg" onClick={reset} disabled={!cart.length && !customer}>Clear</Button>
-            <Button size="lg" variant="primary" className="flex-1" disabled={!cart.length || rxIssues.length > 0} onClick={() => setPaying(true)}>
-              Charge {cart.length > 0 && money(fromCents(totals.totalCents))} <kbd className="ml-1 rounded bg-white/15 px-1 text-[10.5px]">F9</kbd>
+            <Button size="lg" variant="primary" className="flex-1" disabled={!cart.length || rxIssues.length > 0 || insuranceProblem !== null} onClick={() => setPaying(true)}>
+              {insured && cart.length > 0 && patientCents === 0 ? 'Complete' : 'Charge'} {cart.length > 0 && money(fromCents(patientCents))} <kbd className="ml-1 rounded bg-white/15 px-1 text-[10.5px]">F9</kbd>
             </Button>
           </div>
         </div>
@@ -458,7 +516,8 @@ export function PosPage() {
         onClose={() => setPaying(false)}
         cart={cart}
         cartDiscount={cartDiscount}
-        totalCents={totals.totalCents}
+        totalCents={patientCents}
+        insurance={insured ? { name: scheme!.name, amountCents: insuranceCents } : null}
         customer={customer}
         prescriptionId={prescription?.id ?? null}
         onPaid={onPaid}
@@ -473,9 +532,18 @@ export function PosPage() {
 }
 
 /** Which price rule applied to a line, and the next quantity price within reach. */
-function PriceNote({ line, price, amount }: { line: CartLine; price: LinePrice; amount: (v: number) => string }) {
-  if (price.source !== 'wholesale' && price.source !== 'quantity' && !price.next) return null;
+function PriceNote({ line, price, amount, scheme }: { line: CartLine; price: LinePrice; amount: (v: number) => string; scheme: string | null }) {
   const unit = line.product.unit;
+  if (scheme) {
+    return (
+      <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[11.5px]">
+        {price.covered
+          ? <Badge tone="brand">{price.source === 'insurance' ? `${scheme} price` : `Covered by ${scheme}`}</Badge>
+          : <Badge tone="warning">Not covered — patient pays</Badge>}
+      </div>
+    );
+  }
+  if (price.source !== 'wholesale' && price.source !== 'quantity' && !price.next) return null;
   return (
     <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[11.5px]">
       {price.source === 'wholesale' && <Badge tone="brand">Wholesale price</Badge>}

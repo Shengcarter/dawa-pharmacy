@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { optionalIsoDate, recordSalePaymentSchema, saleReturnSchema, saleSchema } from '@dawa/shared';
+import { efdReceiptSchema, optionalIsoDate, recordSalePaymentSchema, saleReturnSchema, saleSchema } from '@dawa/shared';
 import { actorOf, requirePermission } from '../../middleware/auth';
 import { sendCsv } from '../../lib/csv';
 import { pool } from '../../db/pool';
@@ -19,6 +19,8 @@ const listQuery = z.object({
   paymentStatus: z.enum(['paid', 'partial', 'unpaid']).optional(),
   paymentType: z.string().max(20).optional(),
   status: z.string().max(30).optional(),
+  efdMissing: z.enum(['true', 'false']).optional().transform((v) => v === 'true'),
+  insured: z.enum(['true', 'false']).optional().transform((v) => v === 'true'),
   format: z.enum(['json', 'csv']).optional(),
 });
 
@@ -43,7 +45,9 @@ salesRouter.get('/', requirePermission('sales.view', 'sales.view_all'), async (r
       { header: 'Total', value: (r) => r.total },
       { header: 'Paid', value: (r) => r.amount_paid },
       { header: 'Balance', value: (r) => r.balance_due },
+      { header: 'Insurance', value: (r) => r.insurance_amount },
       { header: 'Payment', value: (r) => r.payment_type },
+      { header: 'EFD receipt', value: (r) => r.efd_receipt_no ?? '' },
       { header: 'Status', value: (r) => r.status },
     ], result.data);
     return;
@@ -74,6 +78,10 @@ salesRouter.get('/by-invoice/:invoiceNo', requirePermission('sales.return', 'sal
 
 salesRouter.get('/:id', requirePermission('sales.view', 'sales.view_all'), async (req, res) => {
   res.json(await sales.getSale(actorOf(req), idParam(req.params.id)));
+});
+salesRouter.put('/:id/efd', requirePermission('pos.sell', 'sales.view_all'), async (req, res) => {
+  const { efdReceiptNo } = efdReceiptSchema.parse(req.body);
+  res.json(await sales.recordEfdReceipt(actorOf(req), idParam(req.params.id), efdReceiptNo));
 });
 salesRouter.get('/:id/receipt', requirePermission('sales.view', 'sales.view_all', 'pos.sell'), async (req, res) => {
   res.json(await sales.receiptData(actorOf(req), idParam(req.params.id)));

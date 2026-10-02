@@ -1,13 +1,13 @@
 import { randomBytes } from 'node:crypto';
 import {
-  allocateCents, computeCart, formatMoney, fromCents, resolvePrice, toCents, type PaymentMethod, type PriceBreak,
+  allocateCents, computeCart, formatMoney, fromCents, insurerShareCents, resolvePrice, toCents, type PaymentMethod, type PriceBreak,
 } from '@dawa/shared';
 import type { z } from 'zod';
 import type { saleSchema } from '@dawa/shared';
 import { pool, withTransaction, type Tx } from '../../db/pool';
 import { can, occurredAt, type Actor } from '../../lib/actor';
 import { audit } from '../../lib/audit';
-import { AppError, forbidden, notFound, unprocessable } from '../../lib/errors';
+import { AppError, conflict, forbidden, notFound, unprocessable } from '../../lib/errors';
 import { logger } from '../../lib/logger';
 import { likeParam, pageParams, paginated } from '../../lib/pagination';
 import { nextDocumentNumber } from '../../lib/sequences';
@@ -16,6 +16,7 @@ import { businessToday } from '../../lib/today';
 import { getSettings } from '../settings/service';
 import { refreshProductAlerts, raiseNotification } from '../notifications/service';
 import { recomputePrescriptionStatus } from '../prescriptions/service';
+import { createClaimForSale } from '../insurance/service';
 
 type SaleData = z.output<typeof saleSchema>;
 
@@ -101,7 +102,10 @@ async function createSaleTx(tx: Tx, actor: Actor, input: SaleData) {
 
   // ---- Customer -----------------------------------------------------------
   let customerId = input.customerId;
-  let customer: { id: number; full_name: string; status: string; customer_type: string; credit_limit: number; store_credit_balance: number } | null = null;
+  let customer: {
+    id: number; full_name: string; status: string; customer_type: string; credit_limit: number; store_credit_balance: number;
+    insurance_scheme_id: number | null; insurance_member_no: string | null;
+  } | null = null;
 
   // ---- Prescription -------------------------------------------------------
   let prescription: { id: number; rx_number: string; customer_id: number; status: string; valid_until: string | null } | null = null;
@@ -127,12 +131,31 @@ async function createSaleTx(tx: Tx, actor: Actor, input: SaleData) {
   }
   if (customerId) {
     const r = await tx.query(
-      'SELECT id, full_name, status, customer_type, credit_limit, store_credit_balance FROM customers WHERE id = $1 FOR UPDATE',
+      `SELECT id, full_name, status, customer_type, credit_limit, store_credit_balance, insurance_scheme_id, insurance_member_no
+         FROM customers WHERE id = $1 FOR UPDATE`,
       [customerId],
     );
     customer = r.rows[0] ?? null;
     if (!customer) throw notFound('Customer');
     if (customer.status !== 'active') throw unprocessable(`${customer.full_name}'s account is inactive.`);
+  }
+
+  // ---- Insurance ------------------------------------------------------------
+  let scheme: { id: number; name: string; copay_percent: number; coverage: string; requires_prescription: boolean } | null = null;
+  const schemePrices = new Map<number, number>();
+  if (input.useInsurance) {
+    if (!customer) throw unprocessable('Select the insured patient to bill their insurance.');
+    if (!customer.insurance_scheme_id) throw unprocessable(`${customer.full_name} has no insurance scheme on their record.`);
+    const r = await tx.query('SELECT id, name, copay_percent, coverage, requires_prescription, status FROM insurance_schemes WHERE id = $1', [customer.insurance_scheme_id]);
+    if (!r.rows[0] || r.rows[0].status !== 'active') throw unprocessable(`${customer.full_name}'s insurance scheme is inactive.`);
+    scheme = r.rows[0];
+    if (!customer.insurance_member_no?.trim()) throw unprocessable(`Add ${customer.full_name}'s ${scheme!.name} member number before billing the insurance.`);
+    if (scheme!.requires_prescription && !prescription) throw unprocessable(`${scheme!.name} only pays for medicines on a prescription. Attach the prescription.`);
+    if (input.cartDiscount > 0 || input.items.some((i) => i.discount > 0 || i.unitPrice !== null)) {
+      throw unprocessable('Discounts and price changes cannot be given on a sale billed to insurance.');
+    }
+    const p = await tx.query('SELECT product_id, unit_price FROM insurance_scheme_prices WHERE scheme_id = $1 AND product_id = ANY($2::int[])', [scheme!.id, productIds]);
+    for (const row of p.rows) schemePrices.set(row.product_id, Number(row.unit_price));
   }
 
   // ---- Merge duplicate cart lines (same product + same batch choice) -------
@@ -164,14 +187,17 @@ async function createSaleTx(tx: Tx, actor: Actor, input: SaleData) {
         sellingPrice: Number(p.selling_price), packSize: p.pack_size, packSellingPrice: p.pack_selling_price === null ? null : Number(p.pack_selling_price),
         wholesalePrice: p.wholesale_price === null ? null : Number(p.wholesale_price), priceBreaks: p.price_breaks,
       },
-      { sellBy: l.sellBy, productBaseQuantity: productBase.get(l.productId)!, wholesaleCustomer },
+      {
+        sellBy: l.sellBy, productBaseQuantity: productBase.get(l.productId)!, wholesaleCustomer,
+        insurance: scheme ? { unitPrice: schemePrices.get(l.productId) ?? null, coversUnlisted: scheme.coverage === 'all_products' } : null,
+      },
     );
     const unitPrice = l.unitPrice ?? list.price;
     const manual = toCents(unitPrice) !== toCents(list.price);
     if (manual && !can(actor, 'pos.discount_override')) {
       throw forbidden(`You cannot change the price of ${p.name}.`);
     }
-    return { listPrice: list.price, source: manual ? ('manual' as const) : list.source, unitPrice };
+    return { listPrice: list.price, source: manual ? ('manual' as const) : list.source, unitPrice, covered: Boolean(list.covered) };
   });
   const cartInput = lines.map((l, i) => {
     const p = products.get(l.productId)!;
@@ -212,11 +238,16 @@ async function createSaleTx(tx: Tx, actor: Actor, input: SaleData) {
     }
   }
 
-  // ---- Payments -----------------------------------------------------------
-  const totalCents = totals.totalCents;
+  // ---- Insurer's share --------------------------------------------------------
+  const insuranceLineCents = lines.map((_, i) => (scheme && priced[i].covered ? insurerShareCents(totals.lines[i].totalCents, Number(scheme.copay_percent)) : 0));
+  const insuranceCents = insuranceLineCents.reduce((a, c) => a + c, 0);
+  if (scheme && insuranceCents === 0) throw unprocessable(`Nothing in the cart is covered by ${scheme.name}. Sell it without insurance.`);
+
+  // ---- Payments (the patient's share) ----------------------------------------
+  const patientCents = totals.totalCents - insuranceCents;
   const payments = input.payments.map((p) => ({ ...p, cents: toCents(p.amount) }));
   const paidCents = payments.reduce((a, p) => a + p.cents, 0);
-  if (paidCents > totalCents) throw unprocessable('Payments add up to more than the sale total. Enter the cash handed over as "cash tendered" instead.');
+  if (paidCents > patientCents) throw unprocessable('Payments add up to more than the sale total. Enter the cash handed over as "cash tendered" instead.');
   const storeCreditCents = payments.filter((p) => p.method === 'store_credit').reduce((a, p) => a + p.cents, 0);
   if (storeCreditCents > 0) {
     if (!customer) throw unprocessable('Select the customer to pay with store credit.');
@@ -224,7 +255,7 @@ async function createSaleTx(tx: Tx, actor: Actor, input: SaleData) {
       throw unprocessable(`${customer.full_name} has only ${formatMoney(customer.store_credit_balance, cur)} store credit.`);
     }
   }
-  const balanceCents = totalCents - paidCents;
+  const balanceCents = patientCents - paidCents;
   if (balanceCents > 0) {
     if (!input.onCredit) throw unprocessable(`Payment is short by ${formatMoney(fromCents(balanceCents), cur)}.`);
     if (!settings.sales.allowCreditSales) throw unprocessable('Credit sales are switched off in Settings.');
@@ -248,7 +279,7 @@ async function createSaleTx(tx: Tx, actor: Actor, input: SaleData) {
   }
   const methods = new Set(payments.map((p) => p.method));
   const paymentType =
-    payments.length === 0 ? 'credit' : methods.size === 1 && balanceCents === 0 ? [...methods][0] : 'split';
+    payments.length === 0 ? (balanceCents === 0 && insuranceCents > 0 ? 'insurance' : 'credit') : methods.size === 1 && balanceCents === 0 ? [...methods][0] : 'split';
   const paymentStatus = balanceCents === 0 ? 'paid' : paidCents > 0 ? 'partial' : 'unpaid';
 
   // ---- Batch allocation (FEFO unless a batch was chosen) -------------------
@@ -267,14 +298,16 @@ async function createSaleTx(tx: Tx, actor: Actor, input: SaleData) {
   const sale = await tx.query(
     `INSERT INTO sales (invoice_no, branch_id, customer_id, prescription_id, cashier_id, status, payment_type, payment_status,
                         subtotal, discount_total, tax_total, total, amount_paid, balance_due, cost_total, tax_inclusive,
-                        cash_tendered, change_given, notes, receipt_token, idempotency_key, created_at)
-     VALUES ($1,$2,$3,$4,$5,'completed',$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) RETURNING id`,
+                        cash_tendered, change_given, notes, receipt_token, idempotency_key, created_at,
+                        insurance_scheme_id, insurance_member_no, insurance_amount)
+     VALUES ($1,$2,$3,$4,$5,'completed',$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24) RETURNING id`,
     [
       invoiceNo, actor.branchId, customer?.id ?? null, prescription?.id ?? null, actor.userId, paymentType, paymentStatus,
-      fromCents(totals.subtotalCents), fromCents(totals.discountCents), fromCents(totals.taxCents), fromCents(totalCents),
+      fromCents(totals.subtotalCents), fromCents(totals.discountCents), fromCents(totals.taxCents), fromCents(totals.totalCents),
       fromCents(paidCents), fromCents(balanceCents), fromCents(costCents), settings.sales.taxInclusive,
       input.cashTendered, changeCents === null ? null : fromCents(changeCents), input.notes,
       randomBytes(16).toString('hex'), input.idempotencyKey, at,
+      scheme?.id ?? null, scheme ? customer!.insurance_member_no : null, fromCents(insuranceCents),
     ],
   );
   const saleId = sale.rows[0].id as number;
@@ -287,14 +320,15 @@ async function createSaleTx(tx: Tx, actor: Actor, input: SaleData) {
     const tax = allocateCents(t.taxCents, weights);
     const net = allocateCents(t.netCents, weights);
     const total = allocateCents(t.totalCents, weights);
+    const insured = allocateCents(insuranceLineCents[i], weights);
     const rxItem = rxItems.get(l.productId) ?? null;
     for (const [j, part] of parts.entries()) {
       await tx.query(
         `INSERT INTO sale_items (sale_id, product_id, batch_id, quantity, unit_price, discount_amount, tax_rate, net_amount, tax_amount,
-                                 line_total, unit_cost, prescription_item_id, units_per_sale_unit, price_source)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+                                 line_total, unit_cost, prescription_item_id, units_per_sale_unit, price_source, insurance_amount)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
         [saleId, l.productId, part.batchId, part.quantity, fromCents(cartInput[i].unitPriceCents), fromCents(discount[j]),
-         cartInput[i].taxRate, fromCents(net[j]), fromCents(tax[j]), fromCents(total[j]), part.unitCost, rxItem?.id ?? null, l.unitsPer, priced[i].source],
+         cartInput[i].taxRate, fromCents(net[j]), fromCents(tax[j]), fromCents(total[j]), part.unitCost, rxItem?.id ?? null, l.unitsPer, priced[i].source, fromCents(insured[j])],
       );
       await applyMovement(tx, actor, {
         batchId: part.batchId, quantity: -part.quantity, type: 'sale',
@@ -310,6 +344,12 @@ async function createSaleTx(tx: Tx, actor: Actor, input: SaleData) {
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
       [paymentNo, saleId, customer?.id ?? null, p.method, fromCents(p.cents), p.reference, actor.userId, at],
     );
+  }
+  let claimNo: string | null = null;
+  if (scheme && insuranceCents > 0) {
+    claimNo = await createClaimForSale(tx, at, {
+      schemeId: scheme.id, saleId, branchId: actor.branchId, customerId: customer!.id, memberNo: customer!.insurance_member_no!, amountCents: insuranceCents,
+    });
   }
   if (storeCreditCents > 0 && customer) {
     await tx.query('UPDATE customers SET store_credit_balance = store_credit_balance - $2 WHERE id = $1', [customer.id, fromCents(storeCreditCents)]);
@@ -331,8 +371,8 @@ async function createSaleTx(tx: Tx, actor: Actor, input: SaleData) {
 
   await audit(tx, actor, {
     action: 'sale', module: 'sales', entityType: 'sale', entityId: saleId,
-    summary: `${actor.userName} completed sale ${invoiceNo} for ${formatMoney(fromCents(totalCents), cur)}${customer ? ` to ${customer.full_name}` : ''}${balanceCents > 0 ? ` (${formatMoney(fromCents(balanceCents), cur)} on credit)` : ''}${totals.discountCents > 0 ? `, discount ${formatMoney(fromCents(totals.discountCents), cur)}` : ''}`,
-    newValues: { invoiceNo, total: fromCents(totalCents), paymentType, prescription: prescription?.rx_number ?? null },
+    summary: `${actor.userName} completed sale ${invoiceNo} for ${formatMoney(fromCents(totals.totalCents), cur)}${customer ? ` to ${customer.full_name}` : ''}${claimNo ? ` (${formatMoney(fromCents(insuranceCents), cur)} claimed from ${scheme!.name}, ${claimNo})` : ''}${balanceCents > 0 ? ` (${formatMoney(fromCents(balanceCents), cur)} on credit)` : ''}${totals.discountCents > 0 ? `, discount ${formatMoney(fromCents(totals.discountCents), cur)}` : ''}`,
+    newValues: { invoiceNo, total: fromCents(totals.totalCents), paymentType, prescription: prescription?.rx_number ?? null, claimNo },
   });
   return { id: saleId, invoiceNo, productIds };
 }
@@ -351,6 +391,8 @@ export interface SaleListQuery {
   paymentStatus?: string;
   paymentType?: string;
   status?: string;
+  efdMissing?: boolean;
+  insured?: boolean;
 }
 
 export async function listSales(actor: Actor, q: SaleListQuery) {
@@ -369,10 +411,12 @@ export async function listSales(actor: Actor, q: SaleListQuery) {
   if (q.paymentStatus) add('s.payment_status = $?', q.paymentStatus);
   if (q.paymentType) add('s.payment_type = $?', q.paymentType);
   if (q.status) add('s.status = $?', q.status);
+  if (q.efdMissing) where.push('s.efd_receipt_no IS NULL');
+  if (q.insured) where.push('s.insurance_scheme_id IS NOT NULL');
   const { limit, offset } = pageParams(q.page, q.pageSize);
   const { rows } = await pool.query(
     `SELECT s.id, s.invoice_no, s.created_at, s.total, s.discount_total, s.tax_total, s.amount_paid, s.balance_due, s.payment_type,
-            s.payment_status, s.status, c.id AS customer_id, c.full_name AS customer_name, u.full_name AS cashier_name,
+            s.payment_status, s.status, s.insurance_amount, s.efd_receipt_no, c.id AS customer_id, c.full_name AS customer_name, u.full_name AS cashier_name,
             (SELECT COALESCE(sum(quantity), 0)::int FROM sale_items si WHERE si.sale_id = s.id) AS units,
             count(*) OVER() AS total_count, sum(s.total) OVER() AS sum_total
        FROM sales s LEFT JOIN customers c ON c.id = s.customer_id JOIN users u ON u.id = s.cashier_id
@@ -388,9 +432,15 @@ export async function listSales(actor: Actor, q: SaleListQuery) {
 export async function getSale(actor: Actor, id: number) {
   const { rows } = await pool.query(
     `SELECT s.*, c.full_name AS customer_name, c.phone AS customer_phone, c.code AS customer_code, u.full_name AS cashier_name,
-            rx.rx_number
+            rx.rx_number, ins.name AS insurance_scheme_name, eu.full_name AS efd_recorded_by_name,
+            CASE WHEN cl.id IS NULL THEN NULL ELSE json_build_object('id', cl.id, 'claimNo', cl.claim_no, 'status', cl.status,
+              'amount', cl.amount::float8, 'amountPaid', cl.amount_paid::float8,
+              'outstanding', (cl.amount - cl.amount_paid - cl.written_off - cl.billed_to_patient)::float8) END AS claim
        FROM sales s LEFT JOIN customers c ON c.id = s.customer_id JOIN users u ON u.id = s.cashier_id
        LEFT JOIN prescriptions rx ON rx.id = s.prescription_id
+       LEFT JOIN insurance_schemes ins ON ins.id = s.insurance_scheme_id
+       LEFT JOIN insurance_claims cl ON cl.sale_id = s.id
+       LEFT JOIN users eu ON eu.id = s.efd_recorded_by
       WHERE s.id = $1 AND s.branch_id = $2`,
     [id, actor.branchId],
   );
@@ -400,7 +450,7 @@ export async function getSale(actor: Actor, id: number) {
   const [items, payments, returns] = await Promise.all([
     pool.query(
       `SELECT si.id, si.product_id, si.batch_id, si.quantity, si.quantity_returned, si.unit_price, si.units_per_sale_unit, si.price_source, p.pack_size, si.discount_amount, si.tax_rate,
-              si.net_amount, si.tax_amount, si.line_total, si.unit_cost, p.name AS product_name, p.sku, p.unit, p.strength,
+              si.net_amount, si.tax_amount, si.line_total, si.insurance_amount, si.unit_cost, p.name AS product_name, p.sku, p.unit, p.strength,
               b.batch_number, b.expiry_date
          FROM sale_items si JOIN products p ON p.id = si.product_id JOIN product_batches b ON b.id = si.batch_id
         WHERE si.sale_id = $1 ORDER BY si.id`,
@@ -412,7 +462,7 @@ export async function getSale(actor: Actor, id: number) {
       [id],
     ),
     pool.query(
-      `SELECT r.id, r.return_no, r.reason, r.refund_method, r.total_amount, r.refund_amount, r.balance_reduction, r.created_at,
+      `SELECT r.id, r.return_no, r.reason, r.refund_method, r.total_amount, r.refund_amount, r.balance_reduction, r.insurance_amount, r.created_at,
               u.full_name AS processed_by_name
          FROM sale_returns r JOIN users u ON u.id = r.processed_by WHERE r.sale_id = $1 ORDER BY r.created_at`,
       [id],
@@ -420,6 +470,8 @@ export async function getSale(actor: Actor, id: number) {
   ]);
   const showCost = can(actor, 'reports.financial');
   if (!showCost) delete sale.cost_total;
+  // Member numbers follow the customer record: only staff who handle prescriptions see them.
+  if (!can(actor, 'prescriptions.view')) delete sale.insurance_member_no;
   return {
     ...sale,
     items: items.rows.map((i) => (showCost ? i : { ...i, unit_cost: undefined })),
@@ -458,8 +510,9 @@ export async function publicReceipt(token: string) {
   const { rows } = await pool.query(
     `SELECT s.id, s.invoice_no, s.created_at, s.subtotal, s.discount_total, s.tax_total, s.total, s.amount_paid, s.balance_due,
             s.payment_type, s.tax_inclusive, s.cash_tendered, s.change_given, s.status, u.full_name AS cashier_name,
-            c.full_name AS customer_name
+            c.full_name AS customer_name, s.insurance_amount, ins.name AS insurance_scheme_name, s.efd_receipt_no
        FROM sales s JOIN users u ON u.id = s.cashier_id LEFT JOIN customers c ON c.id = s.customer_id
+       LEFT JOIN insurance_schemes ins ON ins.id = s.insurance_scheme_id
       WHERE s.receipt_token = $1`,
     [token],
   );
@@ -474,6 +527,38 @@ export async function publicReceipt(token: string) {
   const payments = await pool.query('SELECT method, amount FROM payments WHERE sale_id = $1 ORDER BY id', [rows[0].id]);
   const { id: _id, ...sale } = rows[0];
   return { sale: { ...sale, items: items.rows, payments: payments.rows }, pharmacy: receiptHeader(settings) };
+}
+
+// ---------------------------------------------------------------------------
+// Fiscal receipts from a separate EFD machine
+// ---------------------------------------------------------------------------
+export async function recordEfdReceipt(actor: Actor, saleId: number, efdReceiptNo: string | null) {
+  return withTransaction(async (tx) => {
+    const { rows } = await tx.query('SELECT id, invoice_no, cashier_id, efd_receipt_no FROM sales WHERE id = $1 AND branch_id = $2 FOR UPDATE', [saleId, actor.branchId]);
+    const sale = rows[0];
+    if (!sale) throw notFound('Sale');
+    if (!can(actor, 'sales.view_all') && sale.cashier_id !== actor.userId) throw forbidden('You can only record EFD receipts for your own sales.');
+    // Correcting a number already recorded is a supervisor's job.
+    if (sale.efd_receipt_no && sale.efd_receipt_no !== efdReceiptNo && !can(actor, 'sales.view_all')) {
+      throw forbidden('An EFD receipt number is already recorded for this sale. Ask a supervisor to correct it.');
+    }
+    if (efdReceiptNo) {
+      const dup = await tx.query('SELECT invoice_no FROM sales WHERE efd_receipt_no = $1 AND id <> $2 AND branch_id = $3 LIMIT 1', [efdReceiptNo, saleId, actor.branchId]);
+      if (dup.rows[0]) throw conflict(`EFD receipt ${efdReceiptNo} is already recorded on ${dup.rows[0].invoice_no}.`);
+    }
+    await tx.query(
+      'UPDATE sales SET efd_receipt_no = $2::varchar, efd_recorded_by = $3, efd_recorded_at = CASE WHEN $2::varchar IS NULL THEN NULL ELSE now() END WHERE id = $1',
+      [saleId, efdReceiptNo, efdReceiptNo ? actor.userId : null],
+    );
+    await audit(tx, actor, {
+      action: 'efd_receipt', module: 'sales', entityType: 'sale', entityId: saleId,
+      summary: efdReceiptNo
+        ? `${actor.userName} recorded EFD receipt ${efdReceiptNo} for ${sale.invoice_no}${sale.efd_receipt_no ? ` (was ${sale.efd_receipt_no})` : ''}`
+        : `${actor.userName} cleared the EFD receipt number on ${sale.invoice_no} (was ${sale.efd_receipt_no})`,
+      oldValues: { efdReceiptNo: sale.efd_receipt_no }, newValues: { efdReceiptNo },
+    });
+    return { efdReceiptNo };
+  });
 }
 
 // ---------------------------------------------------------------------------

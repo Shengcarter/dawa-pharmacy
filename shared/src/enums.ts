@@ -89,6 +89,7 @@ export const SALE_PAYMENT_TYPES = labels({
   store_credit: 'Store credit',
   credit: 'Credit',
   split: 'Split',
+  insurance: 'Insurance',
 });
 export type SalePaymentType = keyof typeof SALE_PAYMENT_TYPES;
 
@@ -192,6 +193,7 @@ export const NOTIFICATION_TYPES = labels({
   expired: 'Expired stock',
   po_pending: 'Purchase order waiting',
   supplier_overdue: 'Supplier payment overdue',
+  claim_overdue: 'Insurance claim overdue',
   sale_failed: 'Failed transaction',
   system: 'System',
 });
@@ -204,3 +206,37 @@ export const DOSAGE_FORMS = [
 ] as const;
 
 export const UNITS = ['tablet', 'capsule', 'bottle', 'vial', 'ampoule', 'tube', 'sachet', 'piece', 'pack', 'box', 'strip'] as const;
+
+export const INSURANCE_COVERAGE = labels({
+  listed_only: 'Only medicines on the price list',
+  all_products: 'All medicines (unlisted at the normal price)',
+});
+export type InsuranceCoverage = keyof typeof INSURANCE_COVERAGE;
+
+export const CLAIM_STATUSES = labels({
+  pending: 'Not yet submitted',
+  submitted: 'Submitted',
+  partially_paid: 'Partly paid',
+  paid: 'Paid',
+  rejected: 'Rejected',
+  closed: 'Closed with shortfall',
+  cancelled: 'Cancelled',
+});
+export type ClaimStatus = keyof typeof CLAIM_STATUSES;
+
+export const CLAIM_PAYMENT_METHODS = labels({
+  bank_transfer: 'Bank transfer',
+  cheque: 'Cheque',
+  mobile_money: 'Mobile money',
+  cash: 'Cash',
+});
+
+export const CLAIM_SHORTFALL_OUTCOMES = labels({
+  write_off: 'Write it off (loss)',
+  bill_patient: 'Bill the patient (added to their account)',
+});
+
+export const FISCAL_MODES = labels({
+  none: 'No fiscal device',
+  external_efd: 'Separate EFD machine — record its receipt number on each sale',
+});

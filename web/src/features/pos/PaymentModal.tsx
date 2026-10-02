@@ -24,12 +24,14 @@ const METHODS: { value: Mode; label: string; icon: typeof Banknote }[] = [
 
 interface SplitRow { method: PaymentMethod; amount: string; reference: string }
 
-export function PaymentModal({ open, onClose, cart, cartDiscount, totalCents, customer, prescriptionId, onPaid, onError }: {
+export function PaymentModal({ open, onClose, cart, cartDiscount, totalCents, insurance = null, customer, prescriptionId, onPaid, onError }: {
   open: boolean;
   onClose: () => void;
   cart: CartLine[];
   cartDiscount: number;
+  /** What the patient pays; the insurer's share (if any) is claimed separately. */
   totalCents: number;
+  insurance?: { name: string; amountCents: number } | null;
   customer: CustomerOption | null;
   prescriptionId: number | null;
   onPaid: (r: PaymentResult) => void;
@@ -66,11 +68,12 @@ export function PaymentModal({ open, onClose, cart, cartDiscount, totalCents, cu
     m === 'credit' ? creditAllowed : m === 'store_credit' ? storeCredit > 0 : true;
 
   const payments = useMemo(() => {
+    if (totalCents === 0) return [];
     if (split) return rows.filter((r) => Number(r.amount) > 0).map((r) => ({ method: r.method, amount: Number(r.amount), reference: r.reference || null }));
     if (mode === 'credit') return [];
     if (mode === 'store_credit') return [{ method: mode, amount: Math.min(total, storeCredit), reference: null }];
     return [{ method: mode, amount: total, reference: reference || null }];
-  }, [split, rows, mode, total, reference, storeCredit]);
+  }, [split, rows, mode, total, totalCents, reference, storeCredit]);
   const paidCents = payments.reduce((a, p) => a + toCents(p.amount), 0);
   const remainingCents = totalCents - paidCents;
   const onCredit = split ? remainderOnCredit && remainingCents > 0 : mode === 'credit';
@@ -96,6 +99,7 @@ export function PaymentModal({ open, onClose, cart, cartDiscount, totalCents, cu
         payments,
         cashTendered: cashCents > 0 && tendered ? Number(tendered) : null,
         onCredit,
+        useInsurance: insurance !== null,
         idempotencyKey: key,
       }),
     onSuccess: onPaid,
@@ -115,7 +119,7 @@ export function PaymentModal({ open, onClose, cart, cartDiscount, totalCents, cu
       open={open}
       onClose={onClose}
       title="Take payment"
-      description={customer ? `Customer: ${customer.fullName}` : 'Walk-in customer'}
+      description={`${customer ? `Customer: ${customer.fullName}` : 'Walk-in customer'}${insurance ? ` · ${insurance.name} pays ${money(fromCents(insurance.amountCents))}` : ''}`}
       size="md"
       footer={
         <>
@@ -133,7 +137,11 @@ export function PaymentModal({ open, onClose, cart, cartDiscount, totalCents, cu
 
       {error && <Alert tone="danger" className="mb-4">{error}</Alert>}
 
-      {!split ? (
+      {totalCents === 0 ? (
+        <Alert tone="success" title={`Fully covered by ${insurance?.name ?? 'insurance'}`}>
+          Nothing to collect from the patient. {insurance && `${money(fromCents(insurance.amountCents))} will be claimed from ${insurance.name}.`}
+        </Alert>
+      ) : !split ? (
         <>
           <div className="grid grid-cols-3 gap-2">
             {METHODS.map((m) => {

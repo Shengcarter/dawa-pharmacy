@@ -43,6 +43,9 @@ const PrescriptionFormPage = p(() => import('./features/prescriptions/Prescripti
 const PrescriptionDetailPage = p(() => import('./features/prescriptions/PrescriptionDetailPage'), 'PrescriptionDetailPage');
 const CustomersPage = p(() => import('./features/customers/CustomersPage'), 'CustomersPage');
 const CustomerDetailPage = p(() => import('./features/customers/CustomerDetailPage'), 'CustomerDetailPage');
+const ClaimsPage = p(() => import('./features/insurance/ClaimsPage'), 'ClaimsPage');
+const SchemesPage = p(() => import('./features/insurance/SchemesPage'), 'SchemesPage');
+const SchemeDetailPage = p(() => import('./features/insurance/SchemeDetailPage'), 'SchemeDetailPage');
 const ExpensesPage = p(() => import('./features/expenses/ExpensesPage'), 'ExpensesPage');
 const UsersPage = p(() => import('./features/users/UsersPage'), 'UsersPage');
 const UserDetailPage = p(() => import('./features/users/UserDetailPage'), 'UserDetailPage');
@@ -108,6 +111,9 @@ export function App() {
             <Route path="prescriptions/:id/edit" element={g(['prescriptions.manage'], <PrescriptionFormPage />)} />
             <Route path="customers" element={g(['customers.view'], <CustomersPage />)} />
             <Route path="customers/:id" element={g(['customers.view'], <CustomerDetailPage />)} />
+            <Route path="insurance/claims" element={g(['insurance.view', 'insurance.claims'], <ClaimsPage />)} />
+            <Route path="insurance/schemes" element={g(['insurance.view', 'insurance.manage'], <SchemesPage />)} />
+            <Route path="insurance/schemes/:id" element={g(['insurance.view', 'insurance.manage'], <SchemeDetailPage />)} />
             <Route path="expenses" element={g(['expenses.view'], <ExpensesPage />)} />
             <Route path="users" element={g(['users.view'], <UsersPage />)} />
             <Route path="users/:id" element={g(['users.view'], <UserDetailPage />)} />

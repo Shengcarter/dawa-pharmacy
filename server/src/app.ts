@@ -31,6 +31,7 @@ import { auditRouter } from './modules/audit/routes';
 import { settingsRouter, publicSettingsRouter } from './modules/settings/routes';
 import { backupsRouter } from './modules/backups/routes';
 import { branchesRouter } from './modules/branches/routes';
+import { insuranceRouter } from './modules/insurance/routes';
 
 export function createApp() {
   const app = express();
@@ -103,6 +104,7 @@ export function createApp() {
   secured.use('/sales', salesRouter);
   secured.use('/prescriptions', prescriptionsRouter);
   secured.use('/expenses', expensesRouter);
+  secured.use('/insurance', insuranceRouter);
   secured.use('/reports', reportsRouter);
   secured.use('/dashboard', dashboardRouter);
   secured.use('/notifications', notificationsRouter);

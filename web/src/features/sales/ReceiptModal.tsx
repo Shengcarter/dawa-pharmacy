@@ -2,6 +2,8 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Check, Copy, MessageCircle, Printer } from 'lucide-react';
 import { api } from '@/lib/api';
+import { useFormat } from '@/lib/settings';
+import { EfdReceiptField } from './EfdReceiptField';
 import { Button, ErrorState, Modal, PageLoader, Select } from '@/components/ui';
 import { Receipt, type ReceiptPharmacy, type ReceiptSale } from './Receipt';
 
@@ -17,6 +19,8 @@ export function useReceipt(saleId: number | null) {
 
 export function ReceiptModal({ saleId, onClose, title = 'Receipt', footerExtra }: { saleId: number | null; onClose: () => void; title?: string; footerExtra?: React.ReactNode }) {
   const { data, error, refetch } = useReceipt(saleId);
+  const { settings } = useFormat();
+  const efd = settings?.sales.fiscalMode === 'external_efd';
   const [paper, setPaper] = useState<ReceiptPharmacy['paper'] | null>(null);
   const [copied, setCopied] = useState(false);
   const link = data ? `${window.location.origin}/r/${data.sale.receiptToken}` : '';
@@ -66,11 +70,19 @@ export function ReceiptModal({ saleId, onClose, title = 'Receipt', footerExtra }
       ) : !data ? (
         <PageLoader />
       ) : (
+        <>
+        {efd && saleId !== null && (
+          <div className="mb-3 rounded-md border border-line px-3 py-2.5">
+            <p className="mb-1.5 text-[12.5px] text-muted">Issue the fiscal receipt on the EFD machine, then record its number here.</p>
+            <EfdReceiptField saleId={saleId} value={data.sale.efdReceiptNo ?? null} compact />
+          </div>
+        )}
         <div className="flex justify-center rounded-md bg-subtle p-4">
           <div className="print-area rounded-sm bg-white p-3 shadow-sm">
             <Receipt sale={data.sale} pharmacy={data.pharmacy} paper={paper ?? data.pharmacy.paper} className={(paper ?? data.pharmacy.paper) === 'a4' ? 'w-[640px] max-w-full' : undefined} />
           </div>
         </div>
+        </>
       )}
     </Modal>
   );

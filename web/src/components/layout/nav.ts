@@ -1,5 +1,5 @@
 import {
-  BarChart3, Bell, Boxes, ClipboardList, FileClock, LayoutDashboard, Settings, ShoppingCart, Truck, Users,
+  BarChart3, Bell, Boxes, ClipboardList, FileClock, LayoutDashboard, Settings, ShieldPlus, ShoppingCart, Truck, Users,
   UserCog, Wallet, type LucideIcon,
 } from 'lucide-react';
 
@@ -56,6 +56,15 @@ export const NAV: NavItem[] = [
     ],
   },
   { label: 'Prescriptions', icon: ClipboardList, to: '/prescriptions', permission: ['prescriptions.view'] },
+  {
+    label: 'Insurance',
+    icon: ShieldPlus,
+    permission: ['insurance.view', 'insurance.claims', 'insurance.manage'],
+    children: [
+      { label: 'Claims', to: '/insurance/claims', permission: ['insurance.view', 'insurance.claims'] },
+      { label: 'Schemes & price lists', to: '/insurance/schemes', permission: ['insurance.view', 'insurance.manage'] },
+    ],
+  },
   { label: 'Customers', icon: Users, to: '/customers', permission: ['customers.view'] },
   { label: 'Expenses', icon: Wallet, to: '/expenses', permission: ['expenses.view'] },
   { label: 'Employees & users', icon: UserCog, to: '/users', permission: ['users.view'] },

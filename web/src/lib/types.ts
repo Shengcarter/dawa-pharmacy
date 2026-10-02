@@ -96,6 +96,8 @@ export interface CustomerOption {
   fullName: string;
   phone: string | null;
   customerType: string;
+  /** The patient's active insurance scheme (from the till lookup). */
+  insurance?: { id: number; code: string; name: string; copayPercent: number; coverage: 'listed_only' | 'all_products'; requiresPrescription: boolean; hasMemberNo: boolean } | null;
   creditLimit: number;
   storeCreditBalance: number;
   outstanding: number;

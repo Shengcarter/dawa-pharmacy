@@ -7,7 +7,7 @@
  *   npm run seed -w server            # refuses to run on a database that has users
  *   npm run seed -w server -- --reset # wipes the database first (development only)
  */
-import { addDays, ean13CheckDigit, productSchema, todayIn, DEFAULT_TIMEZONE } from '@dawa/shared';
+import { addDays, ean13CheckDigit, insurerShareCents, productSchema, resolvePrice, todayIn, DEFAULT_TIMEZONE } from '@dawa/shared';
 import { env } from '../../config/env';
 import { pool } from '../pool';
 import { runMigrations } from '../migrate';
@@ -26,6 +26,7 @@ import { createPrescription } from '../../modules/prescriptions/service';
 import { createExpense } from '../../modules/expenses/service';
 import { adjustStock, transferStock } from '../../modules/inventory/service';
 import { runAllAlerts } from '../../modules/notifications/service';
+import { closeClaim, createScheme, recordClaimPayment, saveSchemePrices, submitClaims } from '../../modules/insurance/service';
 import { CATEGORIES, CUSTOMERS, MANUFACTURERS, PRESCRIBERS, PRODUCTS, STAFF, SUPPLIERS, type DemoProduct } from './catalog';
 
 export const DEMO_PASSWORD = 'Upendo@2026';
@@ -96,6 +97,8 @@ async function createStaff() {
 
 interface SeededProduct extends DemoProduct {
   id: number;
+  wholesale: number | null;
+  breaks: { minQuantity: number; unitPrice: number }[];
   supplierId: number;
   dailyDemand: number;
 }
@@ -161,18 +164,44 @@ async function main() {
     const { id } = await createProduct(as('emmanuel', at(setupDay, 10)), data);
     // Counter sales: ~22/day × ~1.6 lines × ~1.4 units; prescriptions: ~1.5/day × ~1.35 items × ~2 units.
     const dailyDemand = p.rx ? (1.5 * 1.35 * 2 * p.pop * 1.2) / rxPopularity : (22 * 1.6 * 1.4 * p.pop * 1.2) / otcPopularity;
-    products.push({ ...p, id, supplierId: supplierIds[p.supplier], dailyDemand });
+    products.push({ ...p, id, supplierId: supplierIds[p.supplier], dailyDemand, wholesale: data.wholesalePrice, breaks: data.priceBreaks ?? [] });
   }
 
-  const customerIds: { id: number; credit: boolean }[] = [];
-  for (const c of CUSTOMERS) {
+  // ---- Insurance schemes and their agreed price lists -------------------------
+  const schemes = {
+    NHIF: await createScheme(mgr(setupDay, 10), {
+      code: 'NHIF', name: 'NHIF', contactName: 'Claims Office, Kinondoni', phone: '+255222771234', email: null, address: 'NHIF House, Dar es Salaam',
+      copayPercent: 0, coverage: 'listed_only', requiresPrescription: true, claimTermsDays: 45, status: 'active',
+      notes: 'Monthly claim submission by the 5th. Only medicines on the agreed list are covered.',
+    }),
+    JUB: await createScheme(mgr(setupDay, 10), {
+      code: 'JUB', name: 'Jubilee Health', contactName: 'Provider Relations', phone: '+255222135000', email: 'claims@jubilee.example', address: null,
+      copayPercent: 10, coverage: 'all_products', requiresPrescription: true, claimTermsDays: 30, status: 'active',
+      notes: 'Member pays 10% co-pay. Unlisted medicines are paid at our normal price.',
+    }),
+  };
+  const schemeRules = new Map<number, { copay: number; coversAll: boolean; prices: Map<number, number> }>();
+  {
+    const round50 = (v: number) => Math.max(Math.round(v / 50) * 50, 50);
+    const nhif = products.filter((p) => p.rx || ['Analgesics & Antipyretics', 'Gastrointestinal'].includes(p.category)).map((p) => ({ productId: p.id, unitPrice: round50(p.price * 0.85) }));
+    const jub = products.filter((p) => p.rx).map((p) => ({ productId: p.id, unitPrice: round50(p.price * 0.95) }));
+    await saveSchemePrices(mgr(setupDay, 10), schemes.NHIF.id, nhif);
+    await saveSchemePrices(mgr(setupDay, 10), schemes.JUB.id, jub);
+    schemeRules.set(schemes.NHIF.id, { copay: 0, coversAll: false, prices: new Map(nhif.map((x) => [x.productId, x.unitPrice])) });
+    schemeRules.set(schemes.JUB.id, { copay: 10, coversAll: true, prices: new Map(jub.map((x) => [x.productId, x.unitPrice])) });
+  }
+  const schemeByProvider: Record<string, number> = { NHIF: schemes.NHIF.id, 'Jubilee Health': schemes.JUB.id };
+
+  const customerIds: { id: number; credit: boolean; type: string; schemeId: number | null }[] = [];
+  for (const [i, c] of CUSTOMERS.entries()) {
+    const schemeId = 'insuranceProvider' in c ? schemeByProvider[c.insuranceProvider] ?? null : null;
     const r = await createCustomer(mgr(setupDay, 11), {
       fullName: c.fullName, phone: c.phone, email: 'email' in c ? c.email : null, address: 'address' in c ? c.address : null,
       dateOfBirth: 'dateOfBirth' in c ? c.dateOfBirth : null, gender: 'gender' in c ? c.gender : null, customerType: c.customerType,
-      insuranceProvider: 'insuranceProvider' in c ? c.insuranceProvider : null, insuranceMemberNo: null,
+      insuranceSchemeId: schemeId, insuranceMemberNo: schemeId ? `${schemeId === schemes.NHIF.id ? 'NH' : 'JH'}-${String(104_221 + i * 7_919).padStart(8, '0')}` : null,
       creditLimit: 'creditLimit' in c ? c.creditLimit : 0, notes: null, status: 'active',
     });
-    customerIds.push({ id: r.id, credit: 'creditLimit' in c && c.creditLimit > 0 });
+    customerIds.push({ id: r.id, credit: 'creditLimit' in c && c.creditLimit > 0, type: c.customerType, schemeId });
   }
 
   // ---- Stock in: two purchasing cycles per supplier ------------------------
@@ -262,6 +291,34 @@ async function main() {
     }
   }
 
+  /** What the patient pays for a cart, with the same price rules as the till. */
+  function quote(
+    items: { productId: number; quantity: number; sellBy: 'unit' | 'pack'; discount: number }[],
+    customer: { type: string; schemeId: number | null } | null,
+    useInsurance = false,
+  ) {
+    const base = new Map<number, number>();
+    for (const i of items) {
+      const p = products.find((x) => x.id === i.productId)!;
+      base.set(i.productId, (base.get(i.productId) ?? 0) + i.quantity * (i.sellBy === 'pack' ? p.pack : 1));
+    }
+    const scheme = useInsurance && customer?.schemeId ? schemeRules.get(customer.schemeId)! : null;
+    let patientCents = 0;
+    for (const i of items) {
+      const p = products.find((x) => x.id === i.productId)!;
+      const r = resolvePrice(
+        { sellingPrice: p.price, packSize: p.pack, packSellingPrice: p.packPrice ?? null, wholesalePrice: p.wholesale, priceBreaks: p.breaks },
+        {
+          sellBy: i.sellBy, productBaseQuantity: base.get(i.productId)!, wholesaleCustomer: customer?.type === 'wholesale',
+          insurance: scheme ? { unitPrice: scheme.prices.get(i.productId) ?? null, coversUnlisted: scheme.coversAll } : null,
+        },
+      );
+      const line = Math.round(r.price * 100) * i.quantity - Math.round(i.discount * 100);
+      patientCents += scheme && r.covered ? line - insurerShareCents(line, scheme.copay) : line;
+    }
+    return patientCents / 100;
+  }
+
   const sellable = async (sku: string) =>
     Number((await pool.query(
       `SELECT COALESCE(sum(b.quantity_on_hand), 0) AS q FROM product_batches b JOIN products p ON p.id = b.product_id
@@ -313,16 +370,13 @@ async function main() {
         const byPack = Boolean(p.packPrice) && rand() < 0.05;
         return { productId, quantity: byPack ? 1 : quantity, sellBy: byPack ? 'pack' as const : 'unit' as const, batchId: null, unitPrice: null, discount: byPack ? 0 : discount };
       });
-      const preview = items.reduce((a, i) => {
-        const p = products.find((x) => x.id === i.productId)!;
-        return a + (i.sellBy === 'pack' ? p.packPrice! : p.price) * i.quantity - i.discount;
-      }, 0);
+      const preview = quote(items, customer);
       const method = methodRoll < 0.55 ? 'cash' : methodRoll < 0.87 ? 'mobile_money' : 'card';
       const sale = await trySale(actor, {
         customerId: customer?.id ?? null, prescriptionId: null, items, cartDiscount: 0,
         payments: onCredit ? [] : [{ method, amount: preview, reference: method === 'mobile_money' ? `MP${randInt(100000000, 999999999)}` : null }],
         cashTendered: !onCredit && method === 'cash' ? Math.ceil(preview / 5000) * 5000 : null,
-        onCredit, notes: null, idempotencyKey: null,
+        onCredit, useInsurance: false, notes: null, idempotencyKey: null,
       });
       if (sale) {
         allSales.push({ id: sale.id, daysAgo: d });
@@ -355,11 +409,12 @@ async function main() {
       if (d <= 1 && r === 0) continue; // leave the newest prescriptions waiting at the counter
       const dispenseAt = new Date(when.getTime() + randInt(5, 25) * 60_000);
       const saleItems = items.map((i) => ({ productId: i.productId, quantity: i.quantity, sellBy: 'unit' as const, batchId: null, unitPrice: null, discount: 0 }));
-      const total = saleItems.reduce((a, i) => a + products.find((p) => p.id === i.productId)!.price * i.quantity, 0);
+      const insured = patient.schemeId !== null;
+      const total = quote(saleItems, patient, insured);
       const sale = await trySale(as(pharmacist, dispenseAt), {
         customerId: patient.id, prescriptionId: rx.id, items: saleItems, cartDiscount: 0,
-        payments: [{ method: rand() < 0.6 ? 'cash' : 'mobile_money', amount: total, reference: null }],
-        cashTendered: null, onCredit: false, notes: null, idempotencyKey: null,
+        payments: total > 0 ? [{ method: rand() < 0.6 ? 'cash' : 'mobile_money', amount: total, reference: null }] : [],
+        cashTendered: null, onCredit: false, useInsurance: insured, notes: null, idempotencyKey: null,
       });
       if (sale) allSales.push({ id: sale.id, daysAgo: d });
     }
@@ -370,6 +425,48 @@ async function main() {
         categoryId: await expenseCategory('Transport'), description: 'Stock pickup and deliveries (bajaji / boda)',
         amount: randInt(4, 9) * 5000, paymentMethod: 'mobile_money', expenseDate: date, paidTo: 'Local transport', employeeId: null, reference: null, notes: null,
       });
+    }
+  }
+
+  // ---- Insurance claims: submitted monthly, paid ~4 weeks later ---------------
+  {
+    const { rows: claims } = await pool.query(
+      `SELECT c.id, c.scheme_id, c.amount, c.created_at, (now()::date - c.created_at::date) AS age FROM insurance_claims c ORDER BY c.created_at, c.id`,
+    );
+    const batches = new Map<string, typeof claims>();
+    for (const c of claims) {
+      if (c.age < 12) continue; // this month's claims are still waiting to be submitted
+      const month = new Date(c.created_at).toISOString().slice(0, 7);
+      const key = `${c.scheme_id}:${month}`;
+      batches.set(key, [...(batches.get(key) ?? []), c]);
+    }
+    let shortPaid = false;
+    let rejected = false;
+    for (const [key, batch] of batches) {
+      const [schemeId, month] = key.split(':');
+      const code = Number(schemeId) === schemes.NHIF.id ? 'NHIF' : 'JUB';
+      const submitDay = addDays(`${month}-01`, 34); // early the following month
+      const submitAt = submitDay > today ? today : submitDay;
+      await submitClaims(as('fatuma', at(submitAt, 11)), batch.map((c) => c.id), `${code}-${month.replace('-', '')}`);
+      await pool.query('UPDATE insurance_claims SET submitted_at = $2 WHERE id = ANY($1::int[])', [batch.map((c) => c.id), at(submitAt, 11)]);
+      const paidOn = addDays(submitAt, Number(schemeId) === schemes.NHIF.id ? 38 : 26);
+      if (paidOn > today) continue;
+      for (const c of batch) {
+        const actor = as('fatuma', at(paidOn, 14));
+        if (!rejected && Number(schemeId) === schemes.JUB.id) {
+          rejected = true;
+          await closeClaim(actor, c.id, { outcome: 'bill_patient', reason: 'Rejected by Jubilee: membership lapsed on the date of service' });
+          continue;
+        }
+        if (!shortPaid && Number(schemeId) === schemes.NHIF.id && Number(c.amount) >= 2000) {
+          shortPaid = true;
+          const part = Math.round((Number(c.amount) * 0.8) / 50) * 50;
+          await recordClaimPayment(actor, c.id, { amount: part, paidOn, method: 'bank_transfer', reference: `NHIF-REM-${month.replace('-', '')}` });
+          await closeClaim(actor, c.id, { outcome: 'write_off', reason: 'NHIF paid its tariff for one item, below the claimed price' });
+          continue;
+        }
+        await recordClaimPayment(actor, c.id, { amount: Number(c.amount), paidOn, method: 'bank_transfer', reference: `${code}-REM-${month.replace('-', '')}` });
+      }
     }
   }
 

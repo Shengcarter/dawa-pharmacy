@@ -32,6 +32,10 @@ export interface ReceiptSale {
   cashTendered: number | null;
   changeGiven: number | null;
   rxNumber?: string | null;
+  /** The insurer's share; the patient paid the rest. */
+  insuranceAmount?: number;
+  insuranceSchemeName?: string | null;
+  efdReceiptNo?: string | null;
   items: { productName: string; strength?: string | null; quantity: number; unitsPerSaleUnit?: number; unitPrice: number; discountAmount: number; lineTotal: number; batchNumber?: string; expiryDate?: string | null }[];
   payments: { method: string; amount: number }[];
 }
@@ -73,6 +77,12 @@ export function Receipt({ sale, pharmacy, paper = pharmacy.paper, className }: {
       {sale.discountTotal > 0 && <Row label="Discount" value={`−${m(sale.discountTotal)}`} />}
       {sale.taxTotal > 0 && <Row label={sale.taxInclusive ? 'VAT (included)' : 'VAT'} value={m(sale.taxTotal)} />}
       <Row label={`TOTAL ${cur}`} value={m(sale.total)} strong />
+      {Number(sale.insuranceAmount) > 0 && (
+        <>
+          <Row label={`Insurance (${sale.insuranceSchemeName ?? 'scheme'})`} value={m(Number(sale.insuranceAmount))} />
+          <Row label="Patient share" value={m(sale.total - Number(sale.insuranceAmount))} strong />
+        </>
+      )}
       {sale.payments.map((p, i) => (
         <Row key={i} label={PAYMENT_METHODS[p.method as keyof typeof PAYMENT_METHODS] ?? p.method} value={m(p.amount)} />
       ))}
@@ -98,6 +108,7 @@ export function Receipt({ sale, pharmacy, paper = pharmacy.paper, className }: {
           <Row label="Served by" value={sale.cashierName} />
           <Row label="Customer" value={sale.customerName ?? 'Walk-in'} />
           {sale.rxNumber && <Row label="Prescription" value={sale.rxNumber} />}
+          {sale.efdReceiptNo && <Row label="EFD receipt" value={sale.efdReceiptNo} />}
         </div>
         <div className="mt-2 border-t border-dashed border-black/40 pt-2">
           {lines.map((l, i) => (
@@ -130,6 +141,7 @@ export function Receipt({ sale, pharmacy, paper = pharmacy.paper, className }: {
           <p className="text-[18px] font-semibold tracking-wide">TAX INVOICE</p>
           <p className="mt-1">No. <b>{sale.invoiceNo}</b></p>
           <p>{when}</p>
+          {sale.efdReceiptNo && <p>EFD receipt {sale.efdReceiptNo}</p>}
         </div>
       </div>
       <div className="grid grid-cols-3 gap-4 py-3">

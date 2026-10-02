@@ -69,6 +69,14 @@ export const PERMISSION_GROUPS = {
       'prescriptions.dispense': 'Dispense prescription-only medicines',
     },
   },
+  insurance: {
+    label: 'Insurance',
+    permissions: {
+      'insurance.view': 'View insurance schemes, price lists and claims',
+      'insurance.manage': 'Set up insurance schemes and their price lists',
+      'insurance.claims': 'Submit claims and record insurer payments',
+    },
+  },
   expenses: {
     label: 'Expenses',
     permissions: {
@@ -137,7 +145,7 @@ export const SYSTEM_ROLES = {
       'products.view', 'inventory.view', 'inventory.adjust', 'purchasing.view', 'purchasing.receive',
       'customers.view', 'customers.manage',
       'prescriptions.view', 'prescriptions.manage', 'prescriptions.dispense',
-      'reports.inventory',
+      'insurance.view', 'reports.inventory',
     ] as Permission[],
   },
   cashier: {
@@ -162,7 +170,7 @@ export const SYSTEM_ROLES = {
     permissions: [
       'dashboard.view', 'sales.view', 'sales.view_all', 'sales.record_payment', 'products.view',
       'inventory.view', 'purchasing.view', 'suppliers.view', 'suppliers.payments', 'customers.view',
-      'expenses.view', 'expenses.manage',
+      'expenses.view', 'expenses.manage', 'insurance.view', 'insurance.claims',
       'reports.sales', 'reports.inventory', 'reports.purchases', 'reports.financial', 'reports.staff',
     ] as Permission[],
   },

@@ -1,5 +1,5 @@
 import {
-  EXPIRY_BUCKETS, PAYMENT_STATUSES, PO_STATUSES, PRESCRIPTION_STATUSES, SALE_STATUSES, STOCK_STATUSES, expiryBucket,
+  CLAIM_STATUSES, EXPIRY_BUCKETS, PAYMENT_STATUSES, PO_STATUSES, PRESCRIPTION_STATUSES, SALE_STATUSES, STOCK_STATUSES, expiryBucket,
   type ExpiryBucket, type StockStatus,
 } from '@dawa/shared';
 import { Badge, type Tone } from './ui';
@@ -54,3 +54,12 @@ export const RxTag = () => (
 
 export const ActiveBadge = ({ status }: { status: string }) =>
   status === 'active' ? <Badge tone="success" dot>Active</Badge> : <Badge tone="neutral" dot>{status[0].toUpperCase() + status.slice(1)}</Badge>;
+
+const claimTone: Record<string, Tone> = {
+  pending: 'caution', submitted: 'info', partially_paid: 'warning', paid: 'success', rejected: 'danger', closed: 'neutral', cancelled: 'neutral',
+};
+export const ClaimStatusBadge = ({ status, overdue }: { status: string; overdue?: boolean }) => (
+  <Badge tone={overdue ? 'danger' : claimTone[status] ?? 'neutral'} dot>
+    {overdue ? 'Overdue' : CLAIM_STATUSES[status as keyof typeof CLAIM_STATUSES] ?? status}
+  </Badge>
+);

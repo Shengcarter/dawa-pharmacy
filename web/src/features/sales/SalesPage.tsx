@@ -7,7 +7,7 @@ import { useAuth } from '@/lib/auth';
 import { useListState } from '@/lib/hooks';
 import { useFormat } from '@/lib/settings';
 import { Page } from '@/components/layout/AppLayout';
-import { ButtonLink, Card, DataTable, EmptyState, PageHeader, Pagination, SearchInput, Select, Toolbar } from '@/components/ui';
+import { Badge, ButtonLink, Card, DataTable, EmptyState, PageHeader, Pagination, SearchInput, Select, Toolbar } from '@/components/ui';
 import { DateRangeFilter, ExportButton } from '@/components/Filters';
 import { PaymentStatusBadge, SaleStatusBadge } from '@/components/StatusBadges';
 import { useDebounced } from '@/lib/hooks';
@@ -15,7 +15,7 @@ import { useEffect, useState } from 'react';
 
 interface SaleRow {
   id: number; invoiceNo: string; createdAt: string; total: number; discountTotal: number; balanceDue: number; paymentType: string;
-  paymentStatus: string; status: string; customerName: string | null; cashierName: string; units: number;
+  paymentStatus: string; status: string; customerName: string | null; cashierName: string; units: number; insuranceAmount: number; efdReceiptNo: string | null;
 }
 
 export function useStaffOptions(enabled = true) {
@@ -25,14 +25,15 @@ export function useStaffOptions(enabled = true) {
 export function SalesPage() {
   const { can } = useAuth();
   const navigate = useNavigate();
-  const { amount, dateTime, currency, money, today } = useFormat();
+  const { amount, dateTime, currency, money, today, settings } = useFormat();
+  const efd = settings?.sales.fiscalMode === 'external_efd';
   const t = today();
-  const [s, set] = useListState({ from: t, to: t, search: '', paymentStatus: '', paymentType: '', cashierId: '', customerId: '' });
+  const [s, set] = useListState({ from: t, to: t, search: '', paymentStatus: '', paymentType: '', cashierId: '', customerId: '', efdMissing: '', insured: '' });
   const [term, setTerm] = useState(s.search);
   const debounced = useDebounced(term, 300);
   useEffect(() => set({ search: debounced }), [debounced]); // eslint-disable-line react-hooks/exhaustive-deps
   const staff = useStaffOptions(can('sales.view_all'));
-  const query = { from: s.from, to: s.to, search: s.search, customerId: s.customerId, paymentStatus: s.paymentStatus, paymentType: s.paymentType, cashierId: s.cashierId, page: s.page, pageSize: s.pageSize };
+  const query = { from: s.from, to: s.to, search: s.search, customerId: s.customerId, paymentStatus: s.paymentStatus, paymentType: s.paymentType, cashierId: s.cashierId, efdMissing: s.efdMissing, insured: s.insured, page: s.page, pageSize: s.pageSize };
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['sales', query],
     queryFn: () => api.get<{ data: SaleRow[]; total: number; page: number; pageSize: number; sumTotal: number }>('/sales', query),
@@ -65,6 +66,16 @@ export function SalesPage() {
             <option value="">Any method</option>
             {Object.entries(SALE_PAYMENT_TYPES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
           </Select>
+          <Select value={s.insured} onChange={(e) => set({ insured: e.target.value })} className="w-36" aria-label="Insurance">
+            <option value="">Insured or not</option>
+            <option value="true">Insured sales</option>
+          </Select>
+          {efd && (
+            <Select value={s.efdMissing} onChange={(e) => set({ efdMissing: e.target.value })} className="w-44" aria-label="EFD receipt">
+              <option value="">Any EFD status</option>
+              <option value="true">No EFD receipt yet</option>
+            </Select>
+          )}
           {can('sales.view_all') && (
             <Select value={s.cashierId} onChange={(e) => set({ cashierId: e.target.value })} className="w-40" aria-label="Staff">
               <option value="">All staff</option>
@@ -91,6 +102,7 @@ export function SalesPage() {
             { key: 'total', header: `Total (${currency})`, align: 'right', cell: (r) => <span className="font-medium num">{amount(r.total)}</span> },
             { key: 'method', header: 'Method', cell: (r) => SALE_PAYMENT_TYPES[r.paymentType as keyof typeof SALE_PAYMENT_TYPES], hideBelow: 'lg' },
             { key: 'pay', header: 'Payment', cell: (r) => <PaymentStatusBadge status={r.paymentStatus} /> },
+            ...(efd ? [{ key: 'efd', header: 'EFD', hideBelow: 'md' as const, cell: (r: SaleRow) => (r.efdReceiptNo ? <span className="font-mono text-[12px]">{r.efdReceiptNo}</span> : <Badge tone="warning">Missing</Badge>) }] : []),
             { key: 'status', header: 'Status', cell: (r) => <SaleStatusBadge status={r.status} />, hideBelow: 'md' },
           ]}
         />

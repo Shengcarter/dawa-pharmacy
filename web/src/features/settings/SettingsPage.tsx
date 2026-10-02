@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Controller } from 'react-hook-form';
 import { Database, Download, Mail, Plus } from 'lucide-react';
 import {
-  generalSettingsSchema, inventorySettingsSchema, notificationSettingsSchema, salesSettingsSchema, systemSettingsSchema, type SettingsSection,
+  FISCAL_MODES, generalSettingsSchema, inventorySettingsSchema, notificationSettingsSchema, salesSettingsSchema, systemSettingsSchema, type SettingsSection,
 } from '@dawa/shared';
 import { api, downloadFile } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
@@ -177,6 +177,10 @@ function SalesSection({ settings }: { settings: AppSettings }) {
         <Field label="Default VAT rate for new products">{(id) => <Select id={id} {...form.register('defaultTaxRate')}><option value="0">0% (exempt)</option><option value="18">18%</option></Select>}</Field>
         <Field label="Receipt paper">{(id) => <Select id={id} {...form.register('receiptPaper')}><option value="80mm">80 mm thermal</option><option value="58mm">58 mm thermal</option><option value="a4">A4 invoice</option></Select>}</Field>
         <Field label="Receipt footer" className="sm:col-span-3" hint="e.g. returns policy, opening hours, a thank-you message.">{(id) => <Textarea id={id} rows={2} {...form.register('receiptFooter')} />}</Field>
+        <Field label="TRA fiscal receipts" className="sm:col-span-3"
+          hint="With a separate EFD machine, staff record the EFD receipt number on each sale and Invoices shows sales still missing one. Direct VFD integration can be connected later.">
+          {(id) => <Select id={id} disabled={readOnly} {...form.register('fiscalMode')}>{Object.entries(FISCAL_MODES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</Select>}
+        </Field>
       </div>
     </SectionCard>
   );

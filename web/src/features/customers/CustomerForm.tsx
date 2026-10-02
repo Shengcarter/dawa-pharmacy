@@ -6,6 +6,7 @@ import { useAuth } from '@/lib/auth';
 import { applyServerErrors, useZodForm } from '@/lib/forms';
 import { useFormat } from '@/lib/settings';
 import { Alert, Button, Field, Input, Modal, Select, Textarea, useToast } from '@/components/ui';
+import { useSchemes } from '../insurance/SchemesPage';
 
 export function CustomerFormModal({ open, onClose, customer, onSaved }: { open: boolean; onClose: () => void; customer?: Record<string, unknown> | null; onSaved?: (id: number) => void }) {
   const qc = useQueryClient();
@@ -14,6 +15,9 @@ export function CustomerFormModal({ open, onClose, customer, onSaved }: { open: 
   const { currency } = useFormat();
   const [error, setError] = useState<string | null>(null);
   const form = useZodForm(customerSchema);
+  // Insurance details are only sent to staff who handle prescriptions; the API keeps them for everyone else.
+  const seesInsurance = can('prescriptions.view');
+  const schemes = useSchemes(true);
   useEffect(() => {
     if (!open) return;
     setError(null);
@@ -21,7 +25,7 @@ export function CustomerFormModal({ open, onClose, customer, onSaved }: { open: 
     const v = (k: string) => (c[k] as string) ?? '';
     form.reset({
       fullName: v('fullName'), phone: v('phone'), email: v('email'), address: v('address'), dateOfBirth: v('dateOfBirth'), gender: v('gender') || null,
-      customerType: (c.customerType as 'regular') ?? 'regular', insuranceProvider: v('insuranceProvider'), insuranceMemberNo: v('insuranceMemberNo'),
+      customerType: (c.customerType as 'regular') ?? 'regular', insuranceSchemeId: (c.insuranceSchemeId as number) ?? '', insuranceMemberNo: v('insuranceMemberNo'),
       creditLimit: (c.creditLimit as number) ?? 0, notes: v('notes'), status: (c.status as 'active') ?? 'active',
     } as never);
   }, [open, customer, form]);
@@ -53,8 +57,18 @@ export function CustomerFormModal({ open, onClose, customer, onSaved }: { open: 
         <Field label="Address">{(id) => <Input id={id} {...r('address')} />}</Field>
         <Field label="Date of birth" hint="Optional — helps confirm identity for prescriptions." error={errors.dateOfBirth?.message}>{(id) => <Input id={id} type="date" {...r('dateOfBirth')} />}</Field>
         <Field label="Gender" hint="Optional.">{(id) => <Select id={id} placeholder="Not recorded" {...r('gender')}>{Object.entries(GENDERS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</Select>}</Field>
-        <Field label="Insurance provider">{(id) => <Input id={id} {...r('insuranceProvider')} />}</Field>
-        <Field label="Member number">{(id) => <Input id={id} {...r('insuranceMemberNo')} />}</Field>
+        {seesInsurance && (
+          <>
+            <Field label="Insurance scheme" error={errors.insuranceSchemeId?.message} hint="Lets the till bill this patient's insurance.">{(id) => (
+              <Select id={id} placeholder="Not insured" {...r('insuranceSchemeId')}>
+                {schemes.data?.filter((x) => x.status === 'active' || x.id === customer?.insuranceSchemeId).map((x) => (
+                  <option key={x.id} value={x.id}>{x.name}{x.status !== 'active' ? ' (inactive)' : ''}</option>
+                ))}
+              </Select>
+            )}</Field>
+            <Field label="Member number" error={errors.insuranceMemberNo?.message} hint="As printed on the insurance card.">{(id) => <Input id={id} {...r('insuranceMemberNo')} />}</Field>
+          </>
+        )}
         <Field label="Credit limit" error={errors.creditLimit?.message} hint={canCredit ? 'Zero means no credit sales.' : 'Only finance staff can change this.'}>{(id) => <Input id={id} inputMode="decimal" prefix={currency} disabled={!canCredit} {...r('creditLimit')} />}</Field>
         <Field label="Status">{(id) => <Select id={id} {...r('status')}><option value="active">Active</option><option value="inactive">Inactive</option></Select>}</Field>
         <Field label="Notes" className="sm:col-span-2" hint="Avoid recording medical details here.">{(id) => <Textarea id={id} rows={2} {...r('notes')} />}</Field>

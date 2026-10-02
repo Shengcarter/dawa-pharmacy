@@ -11,17 +11,22 @@ import { Page } from '@/components/layout/AppLayout';
 import { Alert, Badge, Button, Card, DetailList, ErrorState, Field, Input, Modal, PageHeader, PageLoader, Select, Textarea, useToast } from '@/components/ui';
 import { PaymentStatusBadge, SaleStatusBadge } from '@/components/StatusBadges';
 import { ReceiptModal } from './ReceiptModal';
+import { EfdReceiptField } from './EfdReceiptField';
+import { ClaimStatusBadge } from '@/components/StatusBadges';
 
 interface SaleItem {
   id: number; productId: number; batchId: number; quantity: number; quantityReturned: number; unitPrice: number; discountAmount: number;
-  taxRate: number; netAmount: number; taxAmount: number; lineTotal: number; unitCost?: number; productName: string; sku: string; unitsPerSaleUnit: number; priceSource: 'standard' | 'pack' | 'wholesale' | 'quantity' | 'manual';
-  unit: string; batchNumber: string; expiryDate: string | null;
+  taxRate: number; netAmount: number; taxAmount: number; lineTotal: number; unitCost?: number; productName: string; sku: string; unitsPerSaleUnit: number; priceSource: 'standard' | 'pack' | 'wholesale' | 'quantity' | 'manual' | 'insurance';
+  unit: string; batchNumber: string; expiryDate: string | null; insuranceAmount: number;
 }
 export interface SaleDetail {
   id: number; invoiceNo: string; createdAt: string; status: string; paymentType: string; paymentStatus: string; subtotal: number;
   discountTotal: number; taxTotal: number; total: number; amountPaid: number; balanceDue: number; costTotal?: number; taxInclusive: boolean;
   cashTendered: number | null; changeGiven: number | null; notes: string | null; customerId: number | null; customerName: string | null;
   customerPhone: string | null; customerCode: string | null; cashierName: string; rxNumber: string | null; prescriptionId: number | null;
+  insuranceAmount: number; insuranceSchemeName: string | null; insuranceMemberNo: string | null; efdReceiptNo: string | null;
+  efdRecordedAt: string | null; efdRecordedByName: string | null;
+  claim: { id: number; claimNo: string; status: string; amount: number; amountPaid: number; outstanding: number } | null;
   items: SaleItem[];
   payments: { id: number; paymentNo: string; method: string; amount: number; reference: string | null; receivedAt: string; receivedByName: string }[];
   returns: { id: number; returnNo: string; reason: string; refundMethod: string; totalAmount: number; refundAmount: number; balanceReduction: number; createdAt: string; processedByName: string }[];
@@ -31,7 +36,7 @@ export function SaleDetailPage() {
   const { id } = useParams();
   const [params, setParams] = useSearchParams();
   const { can } = useAuth();
-  const { money, amount, dateTime, date, currency } = useFormat();
+  const { money, amount, dateTime, date, currency, settings } = useFormat();
   const [receipt, setReceipt] = useState(false);
   const [paying, setPaying] = useState(false);
   const [returning, setReturning] = useState(params.get('return') === '1');
@@ -98,6 +103,8 @@ export function SaleDetailPage() {
               {sale.discountTotal > 0 && <Line label="Discount" value={`−${money(sale.discountTotal)}`} />}
               {sale.taxTotal > 0 && <Line label={sale.taxInclusive ? 'VAT (included)' : 'VAT'} value={money(sale.taxTotal)} />}
               <Line label="Total" value={money(sale.total)} strong />
+              {Number(sale.insuranceAmount) > 0 && <Line label={`${sale.insuranceSchemeName} pays`} value={`−${money(Number(sale.insuranceAmount))}`} />}
+              {Number(sale.insuranceAmount) > 0 && <Line label="Patient's share" value={money(sale.total - Number(sale.insuranceAmount))} strong />}
               {showCost && sale.costTotal !== undefined && <Line label="Cost of goods" value={money(sale.costTotal)} muted />}
             </div>
           </Card>
@@ -152,6 +159,33 @@ export function SaleDetailPage() {
               </ul>
             )}
           </Card>
+          {(sale.claim || sale.insuranceSchemeName) && (
+            <Card title="Insurance">
+              <DetailList columns={1} items={[
+                { label: 'Scheme', value: sale.insuranceSchemeName },
+                { label: 'Member number', value: sale.insuranceMemberNo, hidden: !sale.insuranceMemberNo },
+                { label: 'Insurer pays', value: <span className="num">{money(Number(sale.insuranceAmount))}</span> },
+                {
+                  label: 'Claim', hidden: !sale.claim,
+                  value: sale.claim && (
+                    <span className="flex flex-wrap items-center gap-2">
+                      {can('insurance.view', 'insurance.claims')
+                        ? <Link to={`/insurance/claims?search=${sale.claim.claimNo}&status=`} className="text-brand-700 hover:underline">{sale.claim.claimNo}</Link>
+                        : sale.claim.claimNo}
+                      <ClaimStatusBadge status={sale.claim.status} />
+                    </span>
+                  ),
+                },
+                { label: 'Outstanding from insurer', value: sale.claim ? <span className="num">{money(sale.claim.outstanding)}</span> : null, hidden: !sale.claim || sale.claim.outstanding === 0 },
+              ]} />
+            </Card>
+          )}
+          {(settings?.sales.fiscalMode === 'external_efd' || sale.efdReceiptNo) && (
+            <Card title="Fiscal receipt (EFD)">
+              <EfdReceiptField saleId={sale.id} value={sale.efdReceiptNo} />
+              {sale.efdRecordedAt && <p className="mt-1.5 text-[12px] text-muted">Recorded {dateTime(sale.efdRecordedAt)}{sale.efdRecordedByName ? ` by ${sale.efdRecordedByName}` : ''}</p>}
+            </Card>
+          )}
           {sale.notes && <Card title="Notes"><p className="text-[13px]">{sale.notes}</p></Card>}
         </div>
       </div>
@@ -228,7 +262,13 @@ function ReturnModal({ sale, open, onClose }: { sale: SaleDetail; open: boolean;
     () => lines.reduce((a, i) => a + (qty[i.id] ? Math.round((i.lineTotal * qty[i.id] * 100) / i.quantity) / 100 : 0), 0),
     [lines, qty],
   );
-  const fromBalance = Math.min(refund, sale.balanceDue);
+  // The insurer's share of covered lines comes off the claim, not out of the till.
+  const fromInsurer = useMemo(
+    () => lines.reduce((a, i) => a + (qty[i.id] ? Math.round((Number(i.insuranceAmount) * qty[i.id] * 100) / i.quantity) / 100 : 0), 0),
+    [lines, qty],
+  );
+  const patientPart = Math.round((refund - fromInsurer) * 100) / 100;
+  const fromBalance = Math.min(patientPart, sale.balanceDue);
   const submit = useMutation({
     mutationFn: () =>
       api.post<{ returnNo: string }>('/sales/returns', {
@@ -282,8 +322,9 @@ function ReturnModal({ sale, open, onClose }: { sale: SaleDetail; open: boolean;
       {any && (
         <Alert tone="info" className="mt-4">
           Return value {money(refund)}.
+          {fromInsurer > 0 && ` ${money(fromInsurer)} comes off the insurance claim;`}
           {fromBalance > 0 && ` ${money(fromBalance)} clears the unpaid balance;`}
-          {refund - fromBalance > 0 && ` ${money(refund - fromBalance)} to refund by ${REFUND_METHODS[refundMethod as keyof typeof REFUND_METHODS].toLowerCase()}.`}
+          {patientPart - fromBalance > 0 && ` ${money(patientPart - fromBalance)} to refund by ${REFUND_METHODS[refundMethod as keyof typeof REFUND_METHODS].toLowerCase()}.`}
           {' '}Only resellable, unexpired items go back into stock.
         </Alert>
       )}
@@ -292,4 +333,4 @@ function ReturnModal({ sale, open, onClose }: { sale: SaleDetail; open: boolean;
 }
 
 /** Shown under the unit price when a price rule (not the standard price) set it. */
-const PRICE_SOURCE_LABELS: Partial<Record<string, string>> = { wholesale: 'Wholesale price', quantity: 'Quantity price', manual: 'Price changed at till' };
+const PRICE_SOURCE_LABELS: Partial<Record<string, string>> = { wholesale: 'Wholesale price', quantity: 'Quantity price', insurance: 'Scheme price', manual: 'Price changed at till' };

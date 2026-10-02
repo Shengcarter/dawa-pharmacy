@@ -35,6 +35,8 @@ export const salesSettingsSchema = z.object({
   receiptPaper: z.enum(['80mm', '58mm', 'a4']).default('80mm'),
   receiptFooter: optionalText(300),
   showTinOnReceipt: z.boolean().default(true),
+  /** TRA fiscal receipts: none, or issued on a separate EFD machine and recorded on the sale. */
+  fiscalMode: z.enum(['none', 'external_efd']).default('none'),
 });
 
 export const notificationSettingsSchema = z.object({

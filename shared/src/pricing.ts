@@ -80,7 +80,7 @@ export interface PricedProduct {
   priceBreaks: PriceBreak[];
 }
 
-export type PriceSource = 'standard' | 'pack' | 'wholesale' | 'quantity';
+export type PriceSource = 'standard' | 'pack' | 'wholesale' | 'quantity' | 'insurance';
 
 export interface ResolvedPrice {
   /** Price per sold unit (one base unit, or one whole pack). */
@@ -88,6 +88,16 @@ export interface ResolvedPrice {
   source: PriceSource;
   /** The quantity price that applied, when source is 'quantity'. */
   priceBreak?: PriceBreak;
+  /** Billed to an insurance scheme: the insurer pays all but the co-pay. */
+  covered?: boolean;
+}
+
+/** The scheme the sale is billed to, for one product. */
+export interface InsurancePricing {
+  /** The scheme's agreed price per base unit, or null when the product is not on its list. */
+  unitPrice: number | null;
+  /** Unlisted products are still covered, at the normal selling price. */
+  coversUnlisted: boolean;
 }
 
 const cents = (v: number) => Math.round(v * 100);
@@ -101,8 +111,16 @@ const cents = (v: number) => Math.round(v * 100);
  */
 export function resolvePrice(
   p: PricedProduct,
-  o: { sellBy: 'unit' | 'pack'; productBaseQuantity: number; wholesaleCustomer: boolean },
+  o: { sellBy: 'unit' | 'pack'; productBaseQuantity: number; wholesaleCustomer: boolean; insurance?: InsurancePricing | null },
 ): ResolvedPrice {
+  const unitsPer = o.sellBy === 'pack' && p.packSellingPrice !== null ? p.packSize : 1;
+  if (o.insurance) {
+    // The insurer's agreed price, or (if the scheme covers everything) the plain selling price; no store promotions.
+    if (o.insurance.unitPrice !== null) return { price: (cents(o.insurance.unitPrice) * unitsPer) / 100, source: 'insurance', covered: true };
+    if (o.insurance.coversUnlisted) return { price: (cents(p.sellingPrice) * unitsPer) / 100, source: 'standard', covered: true };
+    // Not covered: the patient pays, with the usual rules.
+    return { ...resolvePrice(p, { ...o, insurance: null }), covered: false };
+  }
   // Best per-base-unit rule price, if any.
   let rule: { cents: number; source: PriceSource; priceBreak?: PriceBreak } | null = null;
   if (o.wholesaleCustomer && p.wholesalePrice !== null && p.wholesalePrice > 0) {
@@ -130,4 +148,9 @@ export function nextPriceBreak(p: PricedProduct, productBaseQuantity: number, cu
       .filter((b) => b.minQuantity > productBaseQuantity && cents(b.unitPrice) < cents(currentPerUnitPrice))
       .sort((a, b) => a.minQuantity - b.minQuantity)[0] ?? null
   );
+}
+
+/** The insurer's part of a covered line total; the patient pays the co-pay (rounded in the patient's favour). */
+export function insurerShareCents(lineTotalCents: number, copayPercent: number): number {
+  return lineTotalCents - Math.floor((lineTotalCents * copayPercent) / 100);
 }

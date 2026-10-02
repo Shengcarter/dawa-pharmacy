@@ -210,12 +210,40 @@ export async function refreshSupplierAlerts() {
   await resolveByPrefixExcept('supplier:', keep);
 }
 
+/** Insurance claims submitted and still unpaid past the scheme's payment terms, one alert per scheme. */
+export async function refreshClaimAlerts(branchId: number) {
+  const settings = await getSettings();
+  const cur = settings.general.currency;
+  const { rows } = await pool.query(
+    `SELECT s.id, s.name, s.claim_terms_days, count(*)::int AS claims,
+            sum(c.amount - c.amount_paid - c.written_off - c.billed_to_patient) AS overdue
+       FROM insurance_claims c JOIN insurance_schemes s ON s.id = c.scheme_id
+      WHERE c.branch_id = $1 AND c.status IN ('submitted', 'partially_paid')
+        AND c.submitted_at + make_interval(days => s.claim_terms_days) < now()
+      GROUP BY s.id`,
+    [branchId],
+  );
+  const keep: string[] = [];
+  for (const s of rows) {
+    const key = `claims:${branchId}:${s.id}`;
+    keep.push(key);
+    await raiseNotification({
+      type: 'claim_overdue', severity: 'warning', dedupeKey: key,
+      title: `${s.name} owes ${formatMoney(s.overdue, cur)} in overdue claims`,
+      message: `${s.claims} claim${s.claims === 1 ? '' : 's'} submitted more than ${s.claim_terms_days} days ago ${s.claims === 1 ? 'is' : 'are'} not yet paid.`,
+      link: `/insurance/claims?status=overdue&schemeId=${s.id}`, branchId, audiencePermission: 'insurance.claims',
+    });
+  }
+  await resolveByPrefixExcept(`claims:${branchId}:`, keep);
+}
+
 export async function runAllAlerts() {
   const { rows } = await pool.query('SELECT id FROM branches WHERE is_active');
   for (const b of rows) {
     await refreshProductAlerts(b.id);
     await refreshExpiryAlerts(b.id);
     await refreshPurchaseAlerts(b.id);
+    await refreshClaimAlerts(b.id);
   }
   await refreshSupplierAlerts();
 }

@@ -40,7 +40,9 @@ Built with TypeScript end to end: **React 19 + Vite + Tailwind CSS 4** on the fr
 | **Inventory** | Stock by batch with status (in stock / low / critical / out of stock / expired), expiry tracking in buckets (expired, 30, 60, 90 days, safe) with value at risk, batch management (correct expiry, quarantine), stock adjustments (found, lost, damaged, expired disposal, count correction), transfers between branches, and an append-only stock movement ledger. |
 | **Purchasing** | Purchase orders (draft → pending approval → ordered → partially received → received, or cancelled) with reorder suggestions, receiving against an order or as a direct delivery — every line creates or tops up a batch with its expiry and cost — and supplier payments with balances and overdue tracking. |
 | **Prescriptions** | Record prescriptions as written (prescriber, facility, registration number, medicines, dosage instructions, quantities, durations, refills), dispense them at the till, partial dispensing and refills, full dispensing history. The software never suggests or substitutes medicines. |
-| **Customers / patients** | Contact details, customer type, optional date of birth / gender / insurance, credit limit, store credit, purchase history and balances. Minimal data by design. |
+| **Insurance** | Schemes (NHIF, private insurers) with co-pay %, coverage (listed medicines only, or everything), prescription requirement and payment terms; an agreed price list per scheme, edited in place or imported/exported as CSV; insured sales at the till charge the patient only their share and open a claim for the rest; claims are submitted in batches, insurer payments recorded (in part or in full), and shortfalls written off (shown in the P&L) or billed to the patient; overdue-claim alerts. |
+| **Fiscal receipts (TRA)** | For pharmacies issuing fiscal receipts on a separate EFD machine: record the EFD receipt number on each sale (straight after the sale, or later), printed on the receipt; Invoices lists sales still missing one; duplicates refused; corrections need a supervisor and are audited. |
+| **Customers / patients** | Contact details, customer type, optional date of birth / gender / insurance scheme and member number, credit limit, store credit, purchase history and balances. Minimal data by design. |
 | **Expenses** | Categorised expenses with payment method, payee, employee, reference and receipt attachment (image / PDF). Expenses are voided, never deleted. |
 | **Reports** | Sales, product performance, purchases, inventory valuation, profit & loss, expenses, expiry, VAT and staff performance — filterable by date, category, supplier and staff, exportable to CSV, printable / save as PDF. |
 | **Alerts** | Low stock, out of stock, expiring and expired stock, purchase orders waiting for approval or overdue for delivery, overdue supplier payments, failed sales. Alerts resolve themselves when the condition clears. |
@@ -222,6 +224,12 @@ Principles:
   enough of the product (single units and packs count together). The server works out every price itself; each
   invoice line records which rule set it. Wholesale and quantity prices must lie between the minimum and the selling
   price, and every change is in the audit log.
+* **Insurance** — when a patient's scheme is billed, each covered line is charged at the scheme's agreed price (or
+  the normal price if the scheme covers unlisted medicines); the patient pays the co-pay plus anything not covered,
+  and the insurer's share becomes a claim. Insured sales need the patient's member number, take no discounts, and
+  need a prescription if the scheme says so. Returning a covered line takes its insurer share off the claim while
+  the claim is still unsubmitted; after submission, covered lines must be settled with the insurer. A claim closed
+  short is either written off (a loss in the P&L) or added to the patient's account.
 * **Discounts** above the role's limit, prices changes at the till and sales below a product's minimum price need the
   override permission.
 * **Credit sales** need a customer with a credit limit that covers the new balance.
@@ -240,10 +248,10 @@ create custom roles. Permissions are enforced by the API on every route; the int
 | --- | --- |
 | Super Admin | Everything, including role management |
 | Owner / Manager | Everything except editing roles |
-| Pharmacist | Sales, discounts within limit, returns, prescriptions and dispensing, view and adjust stock, receive deliveries |
+| Pharmacist | Sales, discounts within limit, returns, prescriptions and dispensing, view and adjust stock, receive deliveries, view insurance |
 | Cashier | Point of sale, own sales, customers |
 | Inventory Officer | Products, stock control, purchase orders, receiving, suppliers, inventory and purchase reports |
-| Accountant | All sales, payments, suppliers and supplier payments, expenses, all reports including profit |
+| Accountant | All sales, payments, suppliers and supplier payments, expenses, insurance claims, all reports including profit |
 
 ## Security
 
@@ -280,7 +288,8 @@ and digital receipts) require `Authorization: Bearer <access token>`. Errors use
 | Inventory | `GET /inventory/batches`, `/inventory/expiry-summary`, `GET/PUT /inventory/batches/:id`, `GET/POST /inventory/adjustments`, `GET /inventory/movements` |
 | Purchasing | `GET/POST /purchasing/orders`, `GET/PUT /purchasing/orders/:id`, `POST /purchasing/orders/:id/transition`, `GET /purchasing/reorder-suggestions`, `GET/POST /purchasing/receipts`, `GET /purchasing/receipts/:id` |
 | Suppliers | `GET/POST /suppliers`, `GET/PUT /suppliers/:id`, `GET /suppliers/options`, `POST /suppliers/payments` |
-| Sales | `GET/POST /sales`, `GET /sales/:id`, `GET /sales/:id/receipt`, `POST /sales/:id/payments`, `GET /sales/by-invoice/:no`, `GET/POST /sales/returns`, `GET /sales/returns/:id`, `GET /public/receipts/:token` |
+| Sales | `GET/POST /sales`, `GET /sales/:id`, `GET /sales/:id/receipt`, `POST /sales/:id/payments`, `GET /sales/by-invoice/:no`, `GET/POST /sales/returns`, `GET /sales/returns/:id`, `PUT /sales/:id/efd`, `GET /public/receipts/:token` |
+| Insurance | `GET/POST /insurance/schemes`, `GET/PUT /insurance/schemes/:id`, `GET/PUT /insurance/schemes/:id/prices`, `POST /insurance/schemes/:id/prices/import`, `GET /insurance/schemes/:id/prices/export`, `GET /insurance/schemes/:id/cart-prices`, `GET /insurance/claims`, `GET /insurance/claims/summary`, `GET /insurance/claims/:id`, `POST /insurance/claims/submit`, `POST /insurance/claims/:id/payments`, `POST /insurance/claims/:id/close` |
 | Customers | `GET/POST /customers`, `GET/PUT /customers/:id`, `GET /customers/lookup` |
 | Prescriptions | `GET/POST /prescriptions`, `GET/PUT /prescriptions/:id`, `POST /prescriptions/:id/cancel` |
 | Expenses | `GET/POST /expenses`, `PUT /expenses/:id`, `POST /expenses/:id/void`, `GET/POST /expenses/:id/receipt`, `GET/POST /expenses/categories` |
@@ -302,7 +311,7 @@ npm run build
 The test suite (Vitest + Supertest, real PostgreSQL) covers sign-in, lock-out, refresh-token rotation, re-use detection and parallel tabs,
 CSRF guard, logout and suspension taking effect immediately, password change and reset, role
 enforcement, FEFO allocation across batches, refusal to sell expired or insufficient stock, sale movements and
-batch-cost COGS, VAT, discount limits and minimum prices, pack, wholesale and quantity prices, prescription enforcement and refills, credit limits and
+batch-cost COGS, VAT, discount limits and minimum prices, pack, wholesale and quantity prices, insured sales and co-pays, claim returns, payments, write-offs and patient billing, EFD receipt numbers, prescription enforcement and refills, credit limits and
 payments, idempotent sales, digital receipt privacy, purchase-order approval and partial/over receipt, expired
 deliveries, adjustments and count corrections, the append-only stock ledger, duplicate SKU/barcode and EAN-13 check
 digits, transfers between branches (batch identity, limits, branch isolation), returns with restocking rules and store credit, the profit & loss identity, expense voiding, CSV formula
@@ -322,7 +331,9 @@ pg_restore --clean --if-exists --no-owner -d "$DATABASE_URL" dawa-YYYYMMDD-HHMMS
 
 * Staff work in one assigned branch at a time; a manager moves a person between branches from *Employees & users*.
   Reports and the dashboard show the signed-in user's branch (supplier balances are company-wide).
-* Insurance price lists (a fixed price per medicine for each scheme, billed to the insurer) are not included;
-  insurance customers pay normal prices and insurance details are recorded on the customer.
+* Insurance claims are prepared and tracked here but sent to the insurer outside the system (their portal, email or
+  paper forms). Electronic submission (e.g. an NHIF claims API) can be added once an insurer gives API access.
 * Password-reset emails need SMTP settings (see *Email*); without them a manager resets passwords from *Employees & users*.
-* Electronic fiscal device (TRA EFD/VFD) integration is not included; receipts are not fiscal receipts.
+* Fiscal receipts: with a separate EFD machine the receipt number is recorded on each sale (Settings → Sales). Direct
+  VFD integration, where the system itself obtains the fiscal receipt from TRA, is not connected yet; it needs an
+  approved VFD provider's API (or TRA VFD registration and certificate) to build and test against.

@@ -11,3 +11,4 @@ export * from './schemas/catalog';
 export * from './schemas/purchasing';
 export * from './schemas/sales';
 export * from './schemas/admin';
+export * from './schemas/insurance';

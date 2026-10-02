@@ -32,6 +32,8 @@ export const saleSchema = z.object({
   cashTendered: money('Cash tendered').optional().nullable().transform((v) => v ?? null),
   /** When true the unpaid remainder is left on the customer's account. */
   onCredit: z.boolean().default(false),
+  /** Bill the customer's insurance scheme: scheme prices, the patient pays the co-pay, the rest is claimed. */
+  useInsurance: z.boolean().default(false),
   notes: optionalText(500),
   /** Client-generated id that makes retries safe (no double sales). */
   idempotencyKey: z.string().trim().min(8).max(64).optional().nullable().transform((v) => v ?? null),
@@ -70,7 +72,7 @@ export const customerSchema = z.object({
   dateOfBirth: optionalIsoDate('Date of birth'),
   gender: z.enum(keysOf(GENDERS)).optional().nullable().transform((v) => v ?? null),
   customerType: z.enum(keysOf(CUSTOMER_TYPES)).default('regular'),
-  insuranceProvider: optionalText(120),
+  insuranceSchemeId: optionalId,
   insuranceMemberNo: optionalText(60),
   creditLimit: money('Credit limit').default(0),
   notes: optionalText(1000),
@@ -111,3 +113,7 @@ export const expenseSchema = z.object({
   notes: optionalText(1000),
 });
 export type ExpenseInput = z.input<typeof expenseSchema>;
+
+export const efdReceiptSchema = z.object({
+  efdReceiptNo: z.string().trim().max(60).regex(/^[A-Za-z0-9\-\/ ]*$/, 'Letters, numbers, - and / only').transform((v) => v || null),
+});

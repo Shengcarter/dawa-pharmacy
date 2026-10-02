@@ -13,7 +13,7 @@ import { CustomerFormModal } from './CustomerForm';
 
 interface CustomerDetail {
   id: number; code: string; fullName: string; phone: string | null; email: string | null; address: string | null; dateOfBirth: string | null; gender: string | null;
-  customerType: string; insuranceProvider: string | null; insuranceMemberNo?: string | null; creditLimit: number; storeCreditBalance: number; notes: string | null; status: string;
+  customerType: string; insuranceProvider: string | null; insuranceSchemeName?: string | null; insuranceSchemeId?: number | null; insuranceMemberNo?: string | null; creditLimit: number; storeCreditBalance: number; notes: string | null; status: string;
   createdAt: string; outstanding: number; lastPurchase: string | null; lifetimeValue: number; visits: number;
   sales: { id: number; invoiceNo: string; createdAt: string; total: number; balanceDue: number; paymentType: string; paymentStatus: string; status: string; lineCount: number }[];
   prescriptions: { id: number; rxNumber: string; prescriberName: string; prescriptionDate: string; status: string }[] | null;
@@ -72,7 +72,7 @@ export function CustomerDetailPage() {
             { label: 'Address', value: c.address },
             { label: 'Date of birth', value: c.dateOfBirth ? date(c.dateOfBirth) : null },
             { label: 'Gender', value: c.gender ? GENDERS[c.gender as keyof typeof GENDERS] : null },
-            { label: 'Insurance', value: [c.insuranceProvider, c.insuranceMemberNo].filter(Boolean).join(' · ') || null },
+            { label: 'Insurance', value: [c.insuranceSchemeName ?? c.insuranceProvider, c.insuranceMemberNo].filter(Boolean).join(' · ') || null },
             { label: 'Notes', value: c.notes, hidden: !c.notes },
             { label: 'Registered', value: date(c.createdAt) },
           ]} />
