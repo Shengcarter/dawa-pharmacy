@@ -254,7 +254,7 @@ function RolesSection() {
   const role = data.roles.find((r) => r.id === selected);
   return (
     <div className="grid gap-4 xl:grid-cols-[260px_1fr]">
-      <Card title="Roles" flush actions={can('roles.manage') && <Button size="sm" icon={<Plus className="size-3.5" />} onClick={() => setCreating(true)}>New</Button>}>
+      <Card title="Roles" className="self-start" flush actions={can('roles.manage') && <Button size="sm" icon={<Plus className="size-3.5" />} onClick={() => setCreating(true)}>New</Button>}>
         <ul className="p-1.5">
           {data.roles.map((r) => (
             <li key={r.id}>

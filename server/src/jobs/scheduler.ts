@@ -2,6 +2,7 @@ import { env } from '../config/env';
 import { logger } from '../lib/logger';
 import { runAllAlerts } from '../modules/notifications/service';
 import { runScheduledBackup } from '../modules/backups/service';
+import { purgeExpiredAuditLogs } from '../modules/settings/retention';
 
 /**
  * In-process scheduler (single-instance deployments). Alerts are recomputed
@@ -14,6 +15,7 @@ export function startScheduler(): () => void {
     try {
       await runAllAlerts();
       await runScheduledBackup();
+      await purgeExpiredAuditLogs();
     } catch (err) {
       logger.error({ err }, 'Scheduled job failed');
     }

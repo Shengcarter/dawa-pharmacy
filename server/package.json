@@ -8,7 +8,7 @@
     "build": "node build.mjs",
     "start": "node --env-file-if-exists=.env dist/server.js",
     "typecheck": "tsc --noEmit",
-    "migrate": "tsx --env-file-if-exists=.env src/db/migrate.ts",
+    "migrate": "tsx --env-file-if-exists=.env src/db/migrate-cli.ts",
     "seed": "tsx --env-file-if-exists=.env src/db/seed/index.ts",
     "create-admin": "tsx --env-file-if-exists=.env src/db/create-admin.ts",
     "alerts": "tsx --env-file-if-exists=.env src/jobs/run-alerts.ts",

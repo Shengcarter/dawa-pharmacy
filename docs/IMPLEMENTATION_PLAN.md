@@ -2,14 +2,10 @@
 
 ## 0. Findings from inspecting the repository
 
-The repository already contains a complete, working salon ERP ("ZOLA STYLISH",
-JavaScript + Express + MySQL + React JSX) at the repository root
-(`backend/`, `frontend/`, `database/`). It is a different product.
-
-**Decision:** the pharmacy system is built as a self-contained application in
-`pharmacy/`, using the requested stack (TypeScript end-to-end, PostgreSQL). The
-salon system is not modified. Nothing is shared at runtime, so either product
-can be deployed, versioned or extracted into its own repository independently.
+The original repository (`Shengcarter/Shengcarter`) contains a complete salon ERP
+("ZOLA STYLISH", JavaScript + Express + MySQL). It is a different product, so the
+pharmacy system lives in its own repository (`Shengcarter/dawa-pharmacy`) with the
+requested stack (TypeScript end-to-end, PostgreSQL). The salon system was not modified.
 
 ## 1. Stack
 
@@ -107,6 +103,8 @@ Accountant — mapped to ~45 fine-grained permissions, enforced by middleware on
 every API route; the UI only hides what the API would refuse anyway.
 
 ## 6. Delivery stages
+
+Status: all ten stages are implemented (see README for the feature list, tests and known limitations).
 
 1. Workspace, shared package, migrations, auth & RBAC
 2. Catalogue (products, categories, manufacturers, barcodes)

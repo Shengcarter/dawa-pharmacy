@@ -33,16 +33,3 @@ export async function runMigrations(): Promise<string[]> {
   }
   return ran;
 }
-
-const isCli = process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
-if (isCli) {
-  runMigrations()
-    .then((ran) => {
-      console.log(ran.length ? `Applied ${ran.length} migration(s).` : 'Database is up to date.');
-      return pool.end();
-    })
-    .catch((err) => {
-      console.error(err.message);
-      process.exit(1);
-    });
-}

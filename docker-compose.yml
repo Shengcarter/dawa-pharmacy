@@ -1,0 +1,41 @@
+# Dawa Pharmacy — single-server deployment
+#   1. cp .env.example .env   and set the passwords/secrets
+#   2. docker compose up -d --build
+#   3. docker compose exec app node dist/create-admin.js   (first time only)
+#   4. open http://<server-ip>:4000
+name: dawa
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: dawa
+      POSTGRES_USER: dawa
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD:?Set DATABASE_PASSWORD in .env}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U dawa']
+      interval: 5s
+      retries: 20
+
+  app:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://dawa:${DATABASE_PASSWORD}@db:5432/dawa
+    ports:
+      - '${HTTP_PORT:-4000}:4000'
+    volumes:
+      - storage:/data
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  db-data:
+  storage:

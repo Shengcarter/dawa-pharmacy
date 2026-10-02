@@ -48,6 +48,8 @@ export function createApp() {
           fontSrc: ["'self'", 'data:'],
           objectSrc: ["'none'"],
           frameAncestors: ["'none'"],
+          // Only force HTTPS sub-resources when the deployment actually serves HTTPS.
+          upgradeInsecureRequests: env.cookieSecure ? [] : null,
         },
       },
       crossOriginResourcePolicy: { policy: 'same-origin' },
