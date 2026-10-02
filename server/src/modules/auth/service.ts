@@ -63,7 +63,8 @@ export async function loadAuthUser(userId: number, db: Db = pool): Promise<AuthU
 
 export interface IssuedSession {
   accessToken: string;
-  refreshToken: string;
+  /** Null when the cookie already holds the current refresh token (see refresh()). */
+  refreshToken: string | null;
   expiresAt: Date;
   user: AuthUser;
 }
@@ -84,7 +85,7 @@ async function issueSession(db: Db, userId: number, client: ClientInfo, familyId
 /** A precomputed hash so unknown emails take as long as wrong passwords (no user enumeration by timing). */
 const DUMMY_HASH = bcrypt.hashSync('dawa-timing-equaliser', BCRYPT_ROUNDS);
 
-export async function login(email: string, password: string, client: ClientInfo): Promise<IssuedSession> {
+export async function login(email: string, password: string, client: ClientInfo): Promise<IssuedSession & { refreshToken: string }> {
   const { rows } = await pool.query(
     `SELECT id, email, password_hash, status, failed_login_count, locked_until FROM users WHERE lower(email) = lower($1)`,
     [email],
@@ -125,19 +126,40 @@ export async function login(email: string, password: string, client: ClientInfo)
 }
 
 /**
- * Rotates a refresh token. Presenting a token that was already rotated means
- * it was copied: the whole session family is revoked.
+ * Another tab may present the token it read just before this one rotated it;
+ * within this window that is a parallel refresh, not a stolen token.
+ */
+const ROTATION_GRACE_SECONDS = 30;
+
+/**
+ * Rotates a refresh token. Presenting a token that was rotated more than
+ * ROTATION_GRACE_SECONDS ago means it was copied: the whole session family is
+ * revoked. Within the window (two tabs refreshing at once) the caller gets an
+ * access token for the family's current session and no new refresh token, so
+ * the shared cookie keeps the one the first refresh set.
  */
 export async function refresh(refreshToken: string, client: ClientInfo): Promise<IssuedSession> {
   const ended = () => unauthorized('Your session has ended. Please sign in again.');
   const result = await withTransaction(async (tx) => {
     const { rows } = await tx.query(
-      `SELECT s.*, u.status, u.email FROM auth_sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = $1 FOR UPDATE OF s`,
-      [sha256(refreshToken)],
+      `SELECT s.*, u.status, u.email, (s.revoked_at > now() - make_interval(secs => $2)) AS in_grace
+         FROM auth_sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = $1 FOR UPDATE OF s`,
+      [sha256(refreshToken), ROTATION_GRACE_SECONDS],
     );
     const s = rows[0];
     if (!s) return null;
     if (s.revoked_at) {
+      if (s.revoked_reason === 'rotated' && s.in_grace && s.status === 'active') {
+        const head = await tx.query(
+          `SELECT id FROM auth_sessions WHERE family_id = $1 AND revoked_at IS NULL AND expires_at > now() ORDER BY id DESC LIMIT 1`,
+          [s.family_id],
+        );
+        if (head.rows[0]) {
+          const user = await loadAuthUser(s.user_id, tx);
+          return { accessToken: signAccessToken(s.user_id, head.rows[0].id), refreshToken: null, expiresAt: new Date(s.expires_at), user };
+        }
+        return null;
+      }
       if (s.revoked_reason === 'rotated') {
         // Committed before the error is raised, so the revocation sticks.
         await tx.query(
@@ -161,7 +183,7 @@ export async function refresh(refreshToken: string, client: ClientInfo): Promise
 export async function logout(refreshToken: string | undefined, sessionId: number | undefined, client: ClientInfo) {
   const { rows } = await pool.query(
     `UPDATE auth_sessions SET revoked_at = now(), revoked_reason = 'logout'
-      WHERE revoked_at IS NULL AND (token_hash = $1 OR id = $2)
+      WHERE revoked_at IS NULL AND family_id IN (SELECT family_id FROM auth_sessions WHERE token_hash = $1 OR id = $2)
       RETURNING user_id`,
     [refreshToken ? sha256(refreshToken) : null, sessionId ?? null],
   );
@@ -184,7 +206,8 @@ export async function changePassword(actor: Actor, sessionId: number, currentPas
     );
     // Sign out every other device.
     await tx.query(
-      `UPDATE auth_sessions SET revoked_at = now(), revoked_reason = 'password_changed' WHERE user_id = $1 AND id <> $2 AND revoked_at IS NULL`,
+      `UPDATE auth_sessions SET revoked_at = now(), revoked_reason = 'password_changed'
+        WHERE user_id = $1 AND revoked_at IS NULL AND family_id <> (SELECT family_id FROM auth_sessions WHERE id = $2)`,
       [actor.userId, sessionId],
     );
     await logActivity(tx, actor.userId, rows[0].email, 'password_changed', { ip: actor.ip ?? null, userAgent: actor.userAgent ?? null });

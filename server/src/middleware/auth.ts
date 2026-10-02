@@ -25,7 +25,10 @@ export async function authenticate(req: Request, _res: Response, next: NextFunct
     `SELECT u.id, u.full_name, u.branch_id,
             COALESCE(array_agg(DISTINCT p.code) FILTER (WHERE p.code IS NOT NULL), '{}') AS permissions
        FROM users u
-       JOIN auth_sessions s ON s.id = $2 AND s.user_id = u.id AND s.revoked_at IS NULL AND s.expires_at > now()
+       -- The token's session may since have been rotated (another tab refreshed);
+       -- it stays valid while its sign-in (session family) is still live.
+       JOIN auth_sessions s ON s.id = $2 AND s.user_id = u.id AND (s.revoked_at IS NULL OR s.revoked_reason = 'rotated')
+       JOIN auth_sessions live ON live.family_id = s.family_id AND live.revoked_at IS NULL AND live.expires_at > now()
        LEFT JOIN user_roles ur ON ur.user_id = u.id
        LEFT JOIN role_permissions rp ON rp.role_id = ur.role_id
        LEFT JOIN permissions p ON p.id = rp.permission_id

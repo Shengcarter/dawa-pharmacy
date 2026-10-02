@@ -50,10 +50,35 @@ describe('authentication', () => {
     expect(r1.status).toBe(200);
     const cookie2 = refreshCookie(r1);
     expect(cookie2).not.toBe(cookie1);
+    // Replayed after the grace window for parallel tabs.
+    await pool.query(`UPDATE auth_sessions SET revoked_at = now() - interval '5 minutes' WHERE user_id = $1 AND revoked_reason = 'rotated'`, [u.userId]);
     const replay = await request(app).post('/api/auth/refresh').set('x-dawa-client', 'web').set('Cookie', cookie1);
     expect(replay.status).toBe(401);
     const afterReuse = await request(app).post('/api/auth/refresh').set('x-dawa-client', 'web').set('Cookie', cookie2);
     expect(afterReuse.status).toBe(401);
+  });
+
+  it('keeps other tabs signed in when one tab refreshes, and when two refresh at once', async () => {
+    const u = await userWithRole('pharmacist');
+    const first = await login(u.email, PASSWORD);
+    const tabA = first.body.accessToken;
+    const cookie1 = refreshCookie(first);
+    const me = (token: string) => request(app).get('/api/auth/me').set('Authorization', `Bearer ${token}`);
+    // Tab B opens and refreshes: tab A's access token keeps working.
+    const tabB = await request(app).post('/api/auth/refresh').set('x-dawa-client', 'web').set('Cookie', cookie1);
+    expect(tabB.status).toBe(200);
+    expect((await me(tabA)).status).toBe(200);
+    // Tab C refreshed with the same (now rotated) cookie at the same moment: it gets an access token and no new cookie.
+    const tabC = await request(app).post('/api/auth/refresh').set('x-dawa-client', 'web').set('Cookie', cookie1);
+    expect(tabC.status).toBe(200);
+    expect(tabC.headers['set-cookie']).toBeUndefined();
+    expect((await me(tabC.body.accessToken)).status).toBe(200);
+    // The cookie tab B set still refreshes normally.
+    const next = await request(app).post('/api/auth/refresh').set('x-dawa-client', 'web').set('Cookie', refreshCookie(tabB));
+    expect(next.status).toBe(200);
+    // Signing out in one tab ends every tab.
+    await request(app).post('/api/auth/logout').set('x-dawa-client', 'web').set('Cookie', refreshCookie(next));
+    for (const token of [tabA, tabB.body.accessToken, tabC.body.accessToken, next.body.accessToken]) expect((await me(token)).status).toBe(401);
   });
 
   it('logout ends the session immediately, including the access token', async () => {

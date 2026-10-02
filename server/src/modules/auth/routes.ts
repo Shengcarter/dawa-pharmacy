@@ -42,7 +42,7 @@ authRouter.post('/refresh', requireClientHeader, async (req, res) => {
   }
   try {
     const session = await auth.refresh(token, client(req));
-    setRefreshCookie(res, session.refreshToken, session.expiresAt);
+    if (session.refreshToken) setRefreshCookie(res, session.refreshToken, session.expiresAt);
     res.json({ accessToken: session.accessToken, user: session.user });
   } catch (err) {
     res.clearCookie(COOKIE, { path: cookiePath });
