@@ -7,3 +7,4 @@ coverage/
 server/storage/
 *.log
 .DS_Store
+server/storage-test/

@@ -136,9 +136,9 @@ export async function profitAndLoss(actor: Actor, f: { from: string; to: string 
     pool.query(
       `SELECT ec.name AS category, sum(e.amount) AS amount
          FROM expenses e JOIN expense_categories ec ON ec.id = e.category_id
-        WHERE e.branch_id = $1 AND e.voided_at IS NULL AND e.expense_date BETWEEN $3::date AND $4::date
+        WHERE e.branch_id = $1 AND e.voided_at IS NULL AND e.expense_date BETWEEN $2::date AND $3::date
         GROUP BY ec.name ORDER BY amount DESC`,
-      p,
+      [actor.branchId, f.from, f.to],
     ),
     pool.query(
       `WITH months AS (

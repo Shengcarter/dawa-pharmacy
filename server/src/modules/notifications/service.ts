@@ -125,7 +125,7 @@ export async function refreshExpiryAlerts(branchId: number) {
       keep.push(`${base}d30`);
       await raiseNotification({
         type: 'expiring', severity: 'warning', dedupeKey: `${base}d30`,
-        title: `${r.soon_batches} batch${r.soon_batches === 1 ? '' : 'es'} expire within 30 days`,
+        title: `${r.soon_batches} batch${r.soon_batches === 1 ? ' expires' : 'es expire'} within 30 days`,
         message: `${formatMoney(r.soon_value, cur)} of stock at risk. Sell first, return to supplier, or plan disposal.`,
         link: '/inventory/expiry?bucket=d30', audiencePermission: 'inventory.view',
       });
@@ -134,7 +134,7 @@ export async function refreshExpiryAlerts(branchId: number) {
       keep.push(`${base}warn`);
       await raiseNotification({
         type: 'expiring', severity: 'info', dedupeKey: `${base}warn`,
-        title: `${r.later_batches} batch${r.later_batches === 1 ? '' : 'es'} expire within ${settings.inventory.expiryWarningDays} days`,
+        title: `${r.later_batches} batch${r.later_batches === 1 ? ' expires' : 'es expire'} within ${settings.inventory.expiryWarningDays} days`,
         message: `${formatMoney(r.later_value, cur)} of stock approaching expiry.`,
         link: '/inventory/expiry?bucket=all_risk', audiencePermission: 'inventory.view',
       });

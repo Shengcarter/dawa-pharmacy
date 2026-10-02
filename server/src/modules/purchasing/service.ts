@@ -177,11 +177,11 @@ export async function transitionPurchaseOrder(actor: Actor, id: number, action: 
     }
     const at = occurredAt(actor);
     await tx.query(
-      `UPDATE purchase_orders SET status = $2, updated_at = $3,
-              submitted_at = CASE WHEN $2 = 'pending' THEN $3 ELSE submitted_at END,
-              approved_by = CASE WHEN $2 = 'ordered' THEN $4 ELSE approved_by END,
-              approved_at = CASE WHEN $2 = 'ordered' THEN $3 ELSE approved_at END,
-              cancelled_reason = CASE WHEN $2 = 'cancelled' THEN $5 ELSE cancelled_reason END
+      `UPDATE purchase_orders SET status = $2::varchar, updated_at = $3,
+              submitted_at = CASE WHEN $2::varchar = 'pending' THEN $3 ELSE submitted_at END,
+              approved_by = CASE WHEN $2::varchar = 'ordered' THEN $4::int ELSE approved_by END,
+              approved_at = CASE WHEN $2::varchar = 'ordered' THEN $3 ELSE approved_at END,
+              cancelled_reason = CASE WHEN $2::varchar = 'cancelled' THEN $5::varchar ELSE cancelled_reason END
         WHERE id = $1`,
       [id, t.to, at, actor.userId, reason],
     );
@@ -292,8 +292,8 @@ export async function receiveGoods(
       if (!product.is_batch_tracked) {
         // One running batch: keep its cost as the weighted average so COGS stays true.
         await tx.query(
-          `UPDATE product_batches SET unit_cost = CASE WHEN quantity_on_hand + $2 = 0 THEN $3
-                 ELSE round((quantity_on_hand * unit_cost + $2 * $3) / (quantity_on_hand + $2), 2) END
+          `UPDATE product_batches SET unit_cost = CASE WHEN quantity_on_hand + $2::int = 0 THEN $3::numeric
+                 ELSE round((quantity_on_hand * unit_cost + $2::int * $3::numeric) / (quantity_on_hand + $2::int), 2) END
             WHERE id = $1`,
           [batchId, line.quantity, line.unitCost],
         );

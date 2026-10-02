@@ -176,7 +176,7 @@ async function salesSeries(actor: Actor, period: DashboardPeriod, tz: string, to
   const { days, bucket } = PERIODS[period];
   const start = addDays(today, -(days - 1));
   const prevStart = addDays(start, -days);
-  const params: unknown[] = [actor.branchId, tz, start, today, prevStart];
+  const params: unknown[] = [actor.branchId, tz, start, today];
   const own = ownOnly ? `AND s.cashier_id = $${params.push(actor.userId)}` : '';
   const local = `(s.created_at AT TIME ZONE $2)`;
   const bucketExpr = bucket === 'hour' ? `date_trunc('hour', ${local})` : `date_trunc('${bucket}', ${local}::date)`;
@@ -192,10 +192,12 @@ async function salesSeries(actor: Actor, period: DashboardPeriod, tz: string, to
        FROM buckets LEFT JOIN agg ON agg.bucket = buckets.bucket ORDER BY buckets.bucket`,
     params,
   );
+  const prevParams: unknown[] = [actor.branchId, tz, start, prevStart];
+  if (ownOnly) prevParams.push(actor.userId);
   const prev = await pool.query(
     `SELECT COALESCE(sum(s.total), 0) AS total, count(*)::int AS transactions FROM sales s
-      WHERE s.branch_id = $1 AND ${local}::date >= $5::date AND ${local}::date < $3::date ${own}`,
-    params,
+      WHERE s.branch_id = $1 AND ${local}::date >= $4::date AND ${local}::date < $3::date ${ownOnly ? 'AND s.cashier_id = $5' : ''}`,
+    prevParams,
   );
   const total = rows.reduce((a, r) => a + Number(r.total), 0);
   return {

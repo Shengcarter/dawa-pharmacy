@@ -122,7 +122,7 @@ export async function processReturn(actor: Actor, d: ReturnInput) {
     const left = await tx.query('SELECT bool_and(quantity_returned = quantity) AS all_returned FROM sale_items WHERE sale_id = $1', [sale.id]);
     const newBalance = balanceCents - balanceReduction;
     await tx.query(
-      `UPDATE sales SET status = $2, balance_due = $3, payment_status = CASE WHEN $3 = 0 THEN 'paid' ELSE payment_status END WHERE id = $1`,
+      `UPDATE sales SET status = $2, balance_due = $3::numeric, payment_status = CASE WHEN $3::numeric = 0 THEN 'paid' ELSE payment_status END WHERE id = $1`,
       [sale.id, left.rows[0].all_returned ? 'returned' : 'partially_returned', fromCents(newBalance)],
     );
 
@@ -134,19 +134,23 @@ export async function processReturn(actor: Actor, d: ReturnInput) {
     });
     return { id: returnId, returnNo, refundAmount: fromCents(refundCents), balanceReduction: fromCents(balanceReduction), productIds: lines.map((l) => l.item.product_id) };
   });
-  refreshProductAlerts(actor.branchId, result.productIds).catch((err) => logger.warn({ err }, 'Alert refresh failed'));
+  if (!actor.occurredAt) {
+    refreshProductAlerts(actor.branchId, result.productIds).catch((err) => logger.warn({ err }, 'Alert refresh failed'));
+  }
   const { productIds: _p, ...response } = result;
   return response;
 }
 
 export async function listReturns(actor: Actor, q: { page: number; pageSize: number; search?: string; from?: string | null; to?: string | null }) {
   const tz = (await getSettings()).general.timezone;
-  const params: unknown[] = [actor.branchId, tz];
+  const params: unknown[] = [actor.branchId];
   const where = ['r.branch_id = $1'];
+  let tzIndex = 0;
+  const localDay = () => `(r.created_at AT TIME ZONE $${(tzIndex ||= params.push(tz))})::date`;
   if (!can(actor, 'sales.view_all')) { params.push(actor.userId); where.push(`r.processed_by = $${params.length}`); }
   if (q.search) { params.push(likeParam(q.search)); where.push(`(r.return_no ILIKE $${params.length} OR s.invoice_no ILIKE $${params.length} OR c.full_name ILIKE $${params.length})`); }
-  if (q.from) { params.push(q.from); where.push(`(r.created_at AT TIME ZONE $2)::date >= $${params.length}::date`); }
-  if (q.to) { params.push(q.to); where.push(`(r.created_at AT TIME ZONE $2)::date <= $${params.length}::date`); }
+  if (q.from) { const day = localDay(); params.push(q.from); where.push(`${day} >= $${params.length}::date`); }
+  if (q.to) { const day = localDay(); params.push(q.to); where.push(`${day} <= $${params.length}::date`); }
   const { limit, offset } = pageParams(q.page, q.pageSize);
   const { rows } = await pool.query(
     `SELECT r.id, r.return_no, r.created_at, r.reason, r.refund_method, r.total_amount, r.refund_amount, r.balance_reduction,

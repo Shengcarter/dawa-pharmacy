@@ -129,31 +129,33 @@ export async function login(email: string, password: string, client: ClientInfo)
  * it was copied: the whole session family is revoked.
  */
 export async function refresh(refreshToken: string, client: ClientInfo): Promise<IssuedSession> {
-  return withTransaction(async (tx) => {
+  const ended = () => unauthorized('Your session has ended. Please sign in again.');
+  const result = await withTransaction(async (tx) => {
     const { rows } = await tx.query(
       `SELECT s.*, u.status, u.email FROM auth_sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = $1 FOR UPDATE OF s`,
       [sha256(refreshToken)],
     );
     const s = rows[0];
-    if (!s) throw unauthorized('Your session has ended. Please sign in again.');
+    if (!s) return null;
     if (s.revoked_at) {
       if (s.revoked_reason === 'rotated') {
+        // Committed before the error is raised, so the revocation sticks.
         await tx.query(
           `UPDATE auth_sessions SET revoked_at = now(), revoked_reason = 'reuse_detected' WHERE family_id = $1 AND revoked_at IS NULL`,
           [s.family_id],
         );
         await logActivity(tx, s.user_id, s.email, 'token_reuse', client, 'refresh token reused; sessions revoked');
       }
-      throw unauthorized('Your session has ended. Please sign in again.');
+      return null;
     }
-    if (new Date(s.expires_at) <= new Date() || s.status !== 'active') {
-      throw unauthorized('Your session has ended. Please sign in again.');
-    }
+    if (new Date(s.expires_at) <= new Date() || s.status !== 'active') return null;
     const next = await issueSession(tx, s.user_id, client, s.family_id);
     await tx.query(`UPDATE auth_sessions SET revoked_at = now(), revoked_reason = 'rotated', replaced_by = $2 WHERE id = $1`, [s.id, next.sessionId]);
     const user = await loadAuthUser(s.user_id, tx);
     return { accessToken: next.accessToken, refreshToken: next.refreshToken, expiresAt: next.expiresAt, user };
   });
+  if (!result) throw ended();
+  return result;
 }
 
 export async function logout(refreshToken: string | undefined, sessionId: number | undefined, client: ClientInfo) {

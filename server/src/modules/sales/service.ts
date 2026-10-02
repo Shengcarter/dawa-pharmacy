@@ -50,7 +50,10 @@ export async function createSale(actor: Actor, input: SaleData) {
   }
   try {
     const result = await withTransaction((tx) => createSaleTx(tx, actor, input));
-    refreshProductAlerts(actor.branchId, result.productIds).catch((err) => logger.warn({ err }, 'Alert refresh failed'));
+    // Back-dated (seed/import) sales skip live alert refresh; alerts are recomputed afterwards.
+    if (!actor.occurredAt) {
+      refreshProductAlerts(actor.branchId, result.productIds).catch((err) => logger.warn({ err }, 'Alert refresh failed'));
+    }
     return { id: result.id, invoiceNo: result.invoiceNo, duplicate: false };
   } catch (err) {
     if (!(err instanceof AppError) && !(err as { code?: string }).code?.startsWith('23')) {
@@ -319,14 +322,16 @@ export interface SaleListQuery {
 
 export async function listSales(actor: Actor, q: SaleListQuery) {
   const tz = (await getSettings()).general.timezone;
-  const params: unknown[] = [actor.branchId, tz];
+  const params: unknown[] = [actor.branchId];
   const where = ['s.branch_id = $1'];
   const add = (sql: string, v: unknown) => { params.push(v); where.push(sql.replaceAll('$?', `$${params.length}`)); };
+  let tzIndex = 0;
+  const localDay = () => `(s.created_at AT TIME ZONE $${(tzIndex ||= params.push(tz))})::date`;
   if (!can(actor, 'sales.view_all')) add('s.cashier_id = $?', actor.userId);
   else if (q.cashierId) add('s.cashier_id = $?', q.cashierId);
   if (q.search) add('(s.invoice_no ILIKE $? OR c.full_name ILIKE $? OR c.phone ILIKE $?)', likeParam(q.search));
-  if (q.from) add(`(s.created_at AT TIME ZONE $2)::date >= $?::date`, q.from);
-  if (q.to) add(`(s.created_at AT TIME ZONE $2)::date <= $?::date`, q.to);
+  if (q.from) { const day = localDay(); add(`${day} >= $?::date`, q.from); }
+  if (q.to) { const day = localDay(); add(`${day} <= $?::date`, q.to); }
   if (q.customerId) add('s.customer_id = $?', q.customerId);
   if (q.paymentStatus) add('s.payment_status = $?', q.paymentStatus);
   if (q.paymentType) add('s.payment_type = $?', q.paymentType);
