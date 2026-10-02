@@ -110,7 +110,6 @@ export const bulkProductStatusSchema = z.object({
 export const batchUpdateSchema = z.object({
   expiryDate: optionalIsoDate('Expiry date'),
   manufactureDate: optionalIsoDate('Manufacturing date'),
-  sellingPrice: money('Selling price').optional().nullable().or(z.literal('').transform(() => null)).transform((v) => v ?? null),
   status: z.enum(['active', 'quarantined']),
   reason: requiredText('Reason', 300),
 });

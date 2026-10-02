@@ -34,16 +34,17 @@ export async function audit(db: Db, actor: Actor | null, entry: AuditEntry): Pro
   );
 }
 
-/** Returns only the fields whose values differ, as {old, new} pairs for the audit trail. */
-export function diff<T extends Record<string, unknown>>(before: T, after: Partial<T>): { old: Partial<T>; new: Partial<T> } | null {
-  const oldValues: Partial<T> = {};
-  const newValues: Partial<T> = {};
-  for (const key of Object.keys(after) as (keyof T)[]) {
-    const a = before[key];
-    const b = after[key];
-    if (String(a ?? '') !== String(b ?? '')) {
-      oldValues[key] = a;
-      newValues[key] = b as T[keyof T];
+/** Returns only the fields whose values differ, as {old, new} maps for the audit trail. */
+export function diff(
+  before: Record<string, unknown>,
+  after: Record<string, unknown>,
+): { old: Record<string, unknown>; new: Record<string, unknown> } | null {
+  const oldValues: Record<string, unknown> = {};
+  const newValues: Record<string, unknown> = {};
+  for (const key of Object.keys(after)) {
+    if (String(before[key] ?? '') !== String(after[key] ?? '')) {
+      oldValues[key] = before[key];
+      newValues[key] = after[key];
     }
   }
   return Object.keys(newValues).length ? { old: oldValues, new: newValues } : null;

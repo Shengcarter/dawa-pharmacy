@@ -2,7 +2,9 @@ import pg from 'pg';
 import { env } from '../config/env';
 import { logger } from '../lib/logger';
 
-// NUMERIC → string by default; amounts are converted explicitly where read.
+// NUMERIC → number. Amounts are ≤ 1e11 with 2 decimals, exact in a double;
+// arithmetic is done in integer cents (see lib/money.ts).
+pg.types.setTypeParser(1700, (v) => Number(v));
 // BIGINT (counts) → number: our counts never approach 2^53.
 pg.types.setTypeParser(20, (v) => Number(v));
 // DATE stays as 'YYYY-MM-DD' text, never shifted by the server time zone.
