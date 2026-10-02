@@ -1,4 +1,4 @@
-import { createInterface } from 'node:readline/promises';
+import { createInterface } from 'node:readline';
 import { passwordRules } from '@dawa/shared';
 import { pool } from './pool';
 import { runMigrations } from './migrate';
@@ -13,11 +13,11 @@ import { hashPassword } from '../modules/auth/service';
 async function main() {
   await runMigrations();
   await syncSystemData();
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
-  const name = process.env.ADMIN_NAME || (await rl.question('Full name: '));
-  const email = (process.env.ADMIN_EMAIL || (await rl.question('Email: '))).trim().toLowerCase();
-  const password = process.env.ADMIN_PASSWORD || (await rl.question('Password (10+ chars, upper, lower, number): '));
-  rl.close();
+  const ask = prompter();
+  const name = process.env.ADMIN_NAME || (await ask('Full name: '));
+  const email = (process.env.ADMIN_EMAIL || (await ask('Email: '))).trim().toLowerCase();
+  const password = process.env.ADMIN_PASSWORD || (await ask('Password (10+ chars, upper, lower, number): ', true));
+  ask.close();
   const check = passwordRules.safeParse(password);
   if (!check.success) throw new Error(check.error.issues[0].message);
   const branch = await pool.query(`SELECT id FROM branches WHERE code = 'MAIN'`);
@@ -29,6 +29,42 @@ async function main() {
   if (!rows[0]) throw new Error(`A user with email ${email} already exists.`);
   await pool.query(`INSERT INTO user_roles (user_id, role_id) SELECT $1, id FROM roles WHERE code = 'super_admin'`, [rows[0].id]);
   console.log(`Super Admin ${email} created.`);
+}
+
+/**
+ * Line-by-line prompts that also work with piped input (readline's question()
+ * drops lines that arrive before it is asked). Hidden answers are not echoed
+ * on a terminal.
+ */
+function prompter() {
+  const tty = process.stdin.isTTY === true;
+  let muted = false;
+  const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: tty });
+  if (tty) {
+    const write = (rl as unknown as { _writeToOutput: (s: string) => void })._writeToOutput.bind(rl);
+    (rl as unknown as { _writeToOutput: (s: string) => void })._writeToOutput = (s) => write(muted && !s.includes('\n') ? '' : s);
+  }
+  const lines: string[] = [];
+  const waiting: ((line: string) => void)[] = [];
+  let ended = false;
+  rl.on('line', (line) => (waiting.length ? waiting.shift()!(line) : lines.push(line)));
+  rl.on('close', () => {
+    ended = true;
+    while (waiting.length) waiting.shift()!('');
+  });
+  const ask = (prompt: string, hidden = false) =>
+    new Promise<string>((resolve) => {
+      process.stdout.write(prompt);
+      muted = hidden;
+      const done = (line: string) => {
+        muted = false;
+        resolve(line);
+      };
+      if (lines.length) done(lines.shift()!);
+      else if (ended) done('');
+      else waiting.push(done);
+    });
+  return Object.assign(ask, { close: () => rl.close() });
 }
 
 main()

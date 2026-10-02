@@ -110,7 +110,11 @@ docker compose exec -it app node dist/create-admin.js   # first Super Admin
 ```
 
 Open `http://<server-ip>:4000` from any computer on the pharmacy network. The API serves the built web app,
-applies migrations on start, and stores uploads and backups in the `storage` volume.
+applies migrations on start, and stores uploads and backups in the `storage` volume. The container runs as
+the unprivileged `node` user.
+
+To create the admin without prompts (e.g. from a provisioning script), pass the details as variables:
+`docker compose exec -e ADMIN_NAME='…' -e ADMIN_EMAIL='…' -e ADMIN_PASSWORD='…' app node dist/create-admin.js`.
 
 ### Without Docker
 
