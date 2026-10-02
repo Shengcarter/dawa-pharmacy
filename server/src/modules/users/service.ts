@@ -7,6 +7,7 @@ import { likeParam, pageParams, paginated } from '../../lib/pagination';
 import { hashPassword } from '../auth/service';
 
 interface UserInput {
+  branchId: number | null;
   fullName: string;
   email: string;
   phone: string | null;
@@ -18,6 +19,13 @@ async function assertRolesExist(roleIds: number[]) {
   const { rows } = await pool.query('SELECT id, code FROM roles WHERE id = ANY($1::int[])', [roleIds]);
   if (rows.length !== new Set(roleIds).size) throw badRequest('One of the selected roles does not exist.');
   return rows as { id: number; code: string }[];
+}
+
+async function activeBranch(tx: import('pg').PoolClient, branchId: number): Promise<number> {
+  const { rows } = await tx.query('SELECT is_active FROM branches WHERE id = $1', [branchId]);
+  if (!rows[0]) throw badRequest('Branch not found.');
+  if (!rows[0].is_active) throw unprocessable('That branch is inactive.');
+  return branchId;
 }
 
 /** Only a Super Admin may grant the Super Admin role. */
@@ -41,7 +49,8 @@ export async function listUsers(q: { page: number; pageSize: number; search?: st
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
   const { limit, offset } = pageParams(q.page, q.pageSize);
   const { rows } = await pool.query(
-    `SELECT u.id, u.full_name, u.email, u.phone, u.job_title, u.status, u.last_login_at, u.created_at,
+    `SELECT u.id, u.full_name, u.email, u.phone, u.job_title, u.status, u.last_login_at, u.created_at, u.branch_id,
+            (SELECT name FROM branches WHERE id = u.branch_id) AS branch_name,
             (u.locked_until IS NOT NULL AND u.locked_until > now()) AS locked,
             COALESCE(json_agg(json_build_object('id', r.id, 'code', r.code, 'name', r.name) ORDER BY r.name) FILTER (WHERE r.id IS NOT NULL), '[]') AS roles,
             count(*) OVER() AS total_count
@@ -60,6 +69,7 @@ export async function listUsers(q: { page: number; pageSize: number; search?: st
 export async function getUser(id: number) {
   const { rows } = await pool.query(
     `SELECT u.id, u.full_name, u.email, u.phone, u.job_title, u.status, u.last_login_at, u.created_at, u.must_change_password,
+            u.branch_id, (SELECT name FROM branches WHERE id = u.branch_id) AS branch_name,
             (u.locked_until IS NOT NULL AND u.locked_until > now()) AS locked,
             COALESCE(json_agg(json_build_object('id', r.id, 'code', r.code, 'name', r.name)) FILTER (WHERE r.id IS NOT NULL), '[]') AS roles
        FROM users u LEFT JOIN user_roles ur ON ur.user_id = u.id LEFT JOIN roles r ON r.id = ur.role_id
@@ -89,7 +99,7 @@ export async function createUser(actor: Actor, input: UserInput & { password: st
     const { rows } = await tx.query(
       `INSERT INTO users (branch_id, full_name, email, phone, job_title, password_hash, must_change_password)
        VALUES ($1,$2,$3,$4,$5,$6, TRUE) RETURNING id`,
-      [actor.branchId, input.fullName, input.email, input.phone, input.jobTitle, hash],
+      [await activeBranch(tx, input.branchId ?? actor.branchId), input.fullName, input.email, input.phone, input.jobTitle, hash],
     );
     const id = rows[0].id as number;
     await tx.query('INSERT INTO user_roles (user_id, role_id) SELECT $1, unnest($2::int[])', [id, input.roleIds]);
@@ -120,8 +130,8 @@ export async function updateUser(actor: Actor, id: number, input: UserInput & { 
     const dup = await tx.query('SELECT 1 FROM users WHERE lower(email) = lower($1) AND id <> $2', [input.email, id]);
     if (dup.rowCount) throw conflict('A user with this email already exists.');
     await tx.query(
-      `UPDATE users SET full_name=$2, email=$3, phone=$4, job_title=$5, status=$6, updated_at=now() WHERE id=$1`,
-      [id, input.fullName, input.email, input.phone, input.jobTitle, input.status],
+      `UPDATE users SET full_name=$2, email=$3, phone=$4, job_title=$5, status=$6, branch_id=$7, updated_at=now() WHERE id=$1`,
+      [id, input.fullName, input.email, input.phone, input.jobTitle, input.status, await activeBranch(tx, input.branchId ?? before.branch_id)],
     );
     await tx.query('DELETE FROM user_roles WHERE user_id = $1', [id]);
     await tx.query('INSERT INTO user_roles (user_id, role_id) SELECT $1, unnest($2::int[])', [id, input.roleIds]);

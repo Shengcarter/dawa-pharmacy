@@ -15,11 +15,13 @@ import type { AppSettings } from '@/lib/types';
 import { Page } from '@/components/layout/AppLayout';
 import { Alert, Badge, Button, Card, DataTable, EmptyState, Field, Input, Modal, PageHeader, PageLoader, Select, Switch, Textarea, useToast } from '@/components/ui';
 import { useRoles, type RoleOption } from '../users/UserForm';
+import { useBranches, type Branch } from '@/lib/branches';
 
 const SECTIONS = [
   { value: 'general', label: 'General', permission: ['settings.view', 'settings.manage'] },
   { value: 'inventory', label: 'Inventory', permission: ['settings.view', 'settings.manage'] },
   { value: 'sales', label: 'Sales & receipts', permission: ['settings.view', 'settings.manage'] },
+  { value: 'branches', label: 'Branches', permission: ['settings.view', 'settings.manage'] },
   { value: 'roles', label: 'Users & roles', permission: ['roles.manage', 'users.view'] },
   { value: 'notifications', label: 'Notifications', permission: ['settings.view', 'settings.manage'] },
   { value: 'system', label: 'System & backups', permission: ['settings.view', 'settings.manage', 'backups.manage'] },
@@ -52,6 +54,7 @@ export function SettingsPage() {
               {current === 'general' && <GeneralSection settings={data} />}
               {current === 'inventory' && <InventorySection settings={data} />}
               {current === 'sales' && <SalesSection settings={data} />}
+              {current === 'branches' && <BranchesSection />}
               {current === 'roles' && <RolesSection />}
               {current === 'notifications' && <NotificationsSection settings={data} />}
               {current === 'system' && <SystemSection settings={data} />}
@@ -332,6 +335,56 @@ function NewRoleModal({ open, onClose, onCreated }: { open: boolean; onClose: ()
       <div className="space-y-3.5">
         <Field label="Role name" required>{(id) => <Input id={id} autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Store assistant" />}</Field>
         <Field label="Description">{(id) => <Input id={id} value={description} onChange={(e) => setDescription(e.target.value)} />}</Field>
+      </div>
+    </Modal>
+  );
+}
+
+function BranchesSection() {
+  const { can } = useAuth();
+  const { money } = useFormat();
+  const { data, isLoading, error } = useBranches();
+  const [editing, setEditing] = useState<Branch | 'new' | null>(null);
+  return (
+    <Card title="Branches" description="Each branch keeps its own stock, sales, purchases and expenses. Staff work in the branch assigned to them."
+      actions={can('settings.manage') && <Button size="sm" variant="primary" icon={<Plus className="size-3.5" />} onClick={() => setEditing('new')}>Add branch</Button>} flush>
+      <DataTable rows={data} loading={isLoading} error={error} rowKey={(b) => b.id} columns={[
+        { key: 'name', header: 'Branch', cell: (b) => <div><p className="font-medium">{b.name}</p><p className="text-[12px] text-muted">{b.code}{b.address ? ` · ${b.address}` : ''}</p></div> },
+        { key: 'users', header: 'Active staff', align: 'right', cell: (b) => <span className="num">{b.userCount}</span> },
+        { key: 'stock', header: 'Stock at cost', align: 'right', cell: (b) => <span className="num">{money(b.stockValue)}</span>, hideBelow: 'md' },
+        { key: 'status', header: 'Status', cell: (b) => (b.isActive ? <Badge tone="success" dot>Active</Badge> : <Badge dot>Inactive</Badge>) },
+        { key: 'a', header: '', align: 'right', cell: (b) => can('settings.manage') && <Button size="sm" variant="ghost" onClick={() => setEditing(b)}>Edit</Button> },
+      ]} />
+      <BranchModal branch={editing} onClose={() => setEditing(null)} />
+    </Card>
+  );
+}
+
+function BranchModal({ branch, onClose }: { branch: Branch | 'new' | null; onClose: () => void }) {
+  const qc = useQueryClient();
+  const toast = useToast();
+  const existing = branch && branch !== 'new' ? branch : null;
+  const [form, setForm] = useState({ code: '', name: '', address: '', phone: '', isActive: true });
+  useEffect(() => {
+    if (branch) setForm(existing ? { code: existing.code, name: existing.name, address: existing.address ?? '', phone: existing.phone ?? '', isActive: existing.isActive } : { code: '', name: '', address: '', phone: '', isActive: true });
+  }, [branch, existing]);
+  const save = useMutation({
+    mutationFn: () => (existing ? api.put(`/branches/${existing.id}`, form) : api.post('/branches', form)),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['branches'] }); toast.success('Branch saved'); onClose(); },
+  });
+  const set = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement>) => setForm({ ...form, [k]: e.target.value });
+  return (
+    <Modal open={branch !== null} onClose={onClose} size="sm" title={existing ? `Edit ${existing.name}` : 'Add branch'}
+      footer={<><Button onClick={onClose}>Cancel</Button><Button variant="primary" loading={save.isPending} disabled={!form.code.trim() || !form.name.trim()} onClick={() => save.mutate()}>Save</Button></>}>
+      {save.error && <Alert tone="danger" className="mb-3">{(save.error as Error).message}</Alert>}
+      <div className="space-y-3.5">
+        <div className="grid grid-cols-[110px_1fr] gap-3">
+          <Field label="Code" required>{(id) => <Input id={id} className="uppercase" value={form.code} onChange={set('code')} placeholder="MWG" />}</Field>
+          <Field label="Name" required>{(id) => <Input id={id} value={form.name} onChange={set('name')} placeholder="Mwenge" />}</Field>
+        </div>
+        <Field label="Address">{(id) => <Input id={id} value={form.address} onChange={set('address')} />}</Field>
+        <Field label="Phone">{(id) => <Input id={id} value={form.phone} onChange={set('phone')} />}</Field>
+        <Switch checked={form.isActive} onChange={(v) => setForm({ ...form, isActive: v })} label="Active" description="Inactive branches cannot receive transfers or new staff." />
       </div>
     </Modal>
   );

@@ -30,6 +30,7 @@ import { searchRouter } from './modules/search/routes';
 import { auditRouter } from './modules/audit/routes';
 import { settingsRouter, publicSettingsRouter } from './modules/settings/routes';
 import { backupsRouter } from './modules/backups/routes';
+import { branchesRouter } from './modules/branches/routes';
 
 export function createApp() {
   const app = express();
@@ -109,6 +110,7 @@ export function createApp() {
   secured.use('/audit-logs', auditRouter);
   secured.use('/settings', settingsRouter);
   secured.use('/backups', backupsRouter);
+  secured.use('/branches', branchesRouter);
   api.use(secured);
 
   app.use('/api', api);

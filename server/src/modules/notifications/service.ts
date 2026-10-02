@@ -11,6 +11,8 @@ export interface NotificationInput {
   link?: string | null;
   audiencePermission?: string | null;
   userId?: number | null;
+  /** Limit to staff of one branch (stock, expiry, purchasing alerts). */
+  branchId?: number | null;
   /** Same key = same condition; it is updated in place instead of duplicated. */
   dedupeKey?: string | null;
 }
@@ -21,14 +23,14 @@ export interface NotificationInput {
  */
 export async function raiseNotification(n: NotificationInput) {
   const { rows } = await pool.query(
-    `INSERT INTO notifications (type, severity, title, message, link, audience_permission, user_id, dedupe_key)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+    `INSERT INTO notifications (type, severity, title, message, link, audience_permission, user_id, dedupe_key, branch_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
      ON CONFLICT (dedupe_key) DO UPDATE SET
-       type = EXCLUDED.type, severity = EXCLUDED.severity, title = EXCLUDED.title, message = EXCLUDED.message, link = EXCLUDED.link,
+       branch_id = EXCLUDED.branch_id, type = EXCLUDED.type, severity = EXCLUDED.severity, title = EXCLUDED.title, message = EXCLUDED.message, link = EXCLUDED.link,
        created_at = CASE WHEN notifications.resolved_at IS NOT NULL OR notifications.severity <> EXCLUDED.severity THEN now() ELSE notifications.created_at END,
        resolved_at = NULL, updated_at = now()
      RETURNING id, (xmax = 0) AS inserted, created_at = updated_at AS reopened`,
-    [n.type, n.severity, n.title, n.message, n.link ?? null, n.audiencePermission ?? null, n.userId ?? null, n.dedupeKey ?? null],
+    [n.type, n.severity, n.title, n.message, n.link ?? null, n.audiencePermission ?? null, n.userId ?? null, n.dedupeKey ?? null, n.branchId ?? null],
   );
   // Re-opened or escalated conditions should be seen again.
   if (rows[0] && !rows[0].inserted && rows[0].reopened) {
@@ -64,7 +66,7 @@ export async function refreshProductAlerts(branchId: number, productIds?: number
          SELECT COALESCE(sum(b.quantity_on_hand), 0)::int AS sellable FROM product_batches b
           WHERE b.product_id = p.id AND b.branch_id = $1 AND b.status = 'active' AND (b.expiry_date IS NULL OR b.expiry_date >= $2::date)
        ) s ON TRUE
-      WHERE TRUE ${filter}`,
+      WHERE EXISTS (SELECT 1 FROM product_batches x WHERE x.product_id = p.id AND x.branch_id = $1) ${filter}`,
     params,
   );
   const toResolve: string[] = [];
@@ -84,6 +86,7 @@ export async function refreshProductAlerts(branchId: number, productIds?: number
         : `${p.sellable} left, reorder level is ${p.reorder_level}.`,
       link: `/inventory/products/${p.id}`,
       audiencePermission: 'inventory.view',
+      branchId,
       dedupeKey: key,
     });
   }
@@ -118,7 +121,7 @@ export async function refreshExpiryAlerts(branchId: number) {
         type: 'expired', severity: 'critical', dedupeKey: `${base}expired`,
         title: `${r.expired_batches} expired batch${r.expired_batches === 1 ? '' : 'es'} on the shelf`,
         message: `Stock worth ${formatMoney(r.expired_value, cur)} has expired. It is blocked from sale; dispose of it and record the write-off.`,
-        link: '/inventory/expiry?expiry=expired', audiencePermission: 'inventory.view',
+        link: '/inventory/expiry?expiry=expired', audiencePermission: 'inventory.view', branchId,
       });
     }
     if (r.soon_batches > 0) {
@@ -127,7 +130,7 @@ export async function refreshExpiryAlerts(branchId: number) {
         type: 'expiring', severity: 'warning', dedupeKey: `${base}d30`,
         title: `${r.soon_batches} batch${r.soon_batches === 1 ? ' expires' : 'es expire'} within 30 days`,
         message: `${formatMoney(r.soon_value, cur)} of stock at risk. Sell first, return to supplier, or plan disposal.`,
-        link: '/inventory/expiry?expiry=d30', audiencePermission: 'inventory.view',
+        link: '/inventory/expiry?expiry=d30', audiencePermission: 'inventory.view', branchId,
       });
     }
     if (r.later_batches > 0) {
@@ -136,7 +139,7 @@ export async function refreshExpiryAlerts(branchId: number) {
         type: 'expiring', severity: 'info', dedupeKey: `${base}warn`,
         title: `${r.later_batches} batch${r.later_batches === 1 ? ' expires' : 'es expire'} within ${settings.inventory.expiryWarningDays} days`,
         message: `${formatMoney(r.later_value, cur)} of stock approaching expiry.`,
-        link: '/inventory/expiry?expiry=all_risk', audiencePermission: 'inventory.view',
+        link: '/inventory/expiry?expiry=all_risk', audiencePermission: 'inventory.view', branchId,
       });
     }
   }
@@ -157,7 +160,7 @@ export async function refreshPurchaseAlerts(branchId: number) {
   );
   const keep: string[] = [];
   for (const po of rows) {
-    const key = `po:${po.id}`;
+    const key = `po:${branchId}:${po.id}`;
     keep.push(key);
     const pending = po.status === 'pending';
     await raiseNotification({
@@ -167,10 +170,11 @@ export async function refreshPurchaseAlerts(branchId: number) {
         ? `Submitted to ${po.supplier_name} more than ${settings.notifications.purchaseOrderPendingDays} day(s) ago and not yet approved.`
         : `${po.supplier_name} was expected to deliver by ${po.expected_date}.`,
       link: `/purchasing/orders/${po.id}`,
+      branchId,
       audiencePermission: pending ? 'purchasing.approve' : 'purchasing.view',
     });
   }
-  await resolveByPrefixExcept('po:', keep);
+  await resolveByPrefixExcept(`po:${branchId}:`, keep);
 }
 
 /** Suppliers with unpaid deliveries past their payment terms. */
@@ -220,11 +224,12 @@ export async function runAllAlerts() {
 // Reading
 // ---------------------------------------------------------------------------
 const VISIBLE = `n.resolved_at IS NULL AND (n.user_id IS NULL OR n.user_id = $1)
-  AND (n.audience_permission IS NULL OR n.audience_permission = ANY($2::text[]))`;
+  AND (n.audience_permission IS NULL OR n.audience_permission = ANY($2::text[]))
+  AND (n.branch_id IS NULL OR n.branch_id = $3)`;
 
 export async function listNotifications(actor: Actor, q: { unreadOnly?: boolean; limit: number; type?: string }) {
   const perms = [...actor.permissions];
-  const params: unknown[] = [actor.userId, perms];
+  const params: unknown[] = [actor.userId, perms, actor.branchId];
   let extra = '';
   if (q.unreadOnly) extra += ' AND r.notification_id IS NULL';
   if (q.type) { params.push(q.type); extra += ` AND n.type = $${params.length}`; }
@@ -241,7 +246,7 @@ export async function listNotifications(actor: Actor, q: { unreadOnly?: boolean;
     `SELECT count(*)::int AS unread FROM notifications n
        LEFT JOIN notification_reads r ON r.notification_id = n.id AND r.user_id = $1
       WHERE ${VISIBLE} AND r.notification_id IS NULL`,
-    [actor.userId, perms],
+    [actor.userId, perms, actor.branchId],
   );
   return { items: rows, unread: count.rows[0].unread };
 }
@@ -251,7 +256,7 @@ export async function markRead(actor: Actor, ids: number[] | 'all') {
     await pool.query(
       `INSERT INTO notification_reads (notification_id, user_id)
        SELECT n.id, $1 FROM notifications n WHERE ${VISIBLE} ON CONFLICT DO NOTHING`,
-      [actor.userId, [...actor.permissions]],
+      [actor.userId, [...actor.permissions], actor.branchId],
     );
     return;
   }

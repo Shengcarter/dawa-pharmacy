@@ -314,3 +314,87 @@ export async function listMovements(
   );
   return paginated(rows.map(({ total_count: _t, ...r }) => r), rows[0]?.total_count ?? 0, q.page, q.pageSize);
 }
+
+// ---------------------------------------------------------------------------
+// Transfers between branches
+// ---------------------------------------------------------------------------
+/**
+ * Moves stock from the actor's branch to another branch in one transaction.
+ * The destination receives the same batch number, expiry and unit cost, so
+ * FEFO, expiry alerts and cost of goods stay correct at both ends.
+ */
+export async function transferStock(actor: Actor, d: { toBranchId: number; notes: string | null; items: { batchId: number; quantity: number }[] }) {
+  const today = await businessToday(actor);
+  const settings = await getSettings();
+  if (d.toBranchId === actor.branchId) throw unprocessable('Choose a different branch to transfer to.');
+  return withTransaction(async (tx) => {
+    const dest = await tx.query('SELECT id, name, is_active FROM branches WHERE id = $1', [d.toBranchId]);
+    if (!dest.rows[0]) throw notFound('Branch');
+    if (!dest.rows[0].is_active) throw unprocessable(`${dest.rows[0].name} is inactive.`);
+    const at = occurredAt(actor);
+    const transferNo = await nextDocumentNumber(tx, 'TRF', at);
+    const ins = await tx.query(
+      `INSERT INTO stock_transfers (transfer_no, from_branch_id, to_branch_id, notes, created_by, created_at) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
+      [transferNo, actor.branchId, d.toBranchId, d.notes, actor.userId, at],
+    );
+    const transferId = ins.rows[0].id as number;
+    let totalCost = 0;
+    // Lock source batches in id order to avoid deadlocks with concurrent sales.
+    for (const item of [...d.items].sort((a, b) => a.batchId - b.batchId)) {
+      const { rows } = await tx.query(
+        `SELECT b.*, p.name AS product_name FROM product_batches b JOIN products p ON p.id = b.product_id
+          WHERE b.id = $1 AND b.branch_id = $2 FOR UPDATE OF b`,
+        [item.batchId, actor.branchId],
+      );
+      const src = rows[0];
+      if (!src) throw unprocessable('A selected batch is not in your branch.');
+      if (src.status !== 'active') throw unprocessable(`Batch ${src.batch_number} of ${src.product_name} is ${src.status} and cannot be transferred.`);
+      if (src.expiry_date && src.expiry_date < today) throw unprocessable(`Batch ${src.batch_number} of ${src.product_name} has expired; dispose of it instead of transferring.`);
+      const destBatch = await tx.query(
+        `INSERT INTO product_batches (product_id, branch_id, batch_number, manufacture_date, expiry_date, unit_cost, supplier_id, received_at, created_at, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8,$8)
+         ON CONFLICT (product_id, branch_id, batch_number) DO UPDATE SET updated_at = EXCLUDED.updated_at
+         RETURNING id, expiry_date, status`,
+        [src.product_id, d.toBranchId, src.batch_number, src.manufacture_date, src.expiry_date, src.unit_cost, src.supplier_id, at],
+      );
+      const target = destBatch.rows[0];
+      if ((target.expiry_date ?? null) !== (src.expiry_date ?? null)) {
+        throw unprocessable(`Batch ${src.batch_number} already exists at ${dest.rows[0].name} with a different expiry date.`);
+      }
+      if (target.status === 'disposed') throw unprocessable(`Batch ${src.batch_number} was disposed at ${dest.rows[0].name}.`);
+      const ref = { referenceType: 'transfer', referenceId: transferId, referenceNo: transferNo };
+      await applyMovement(tx, actor, { batchId: src.id, quantity: -item.quantity, type: 'transfer_out', reason: `To ${dest.rows[0].name}`, ...ref });
+      await applyMovement(tx, actor, { batchId: target.id, quantity: item.quantity, type: 'transfer_in', reason: 'Transfer received', allowOtherBranch: true, ...ref });
+      await tx.query(
+        `INSERT INTO stock_transfer_items (transfer_id, product_id, from_batch_id, to_batch_id, quantity, unit_cost) VALUES ($1,$2,$3,$4,$5,$6)`,
+        [transferId, src.product_id, src.id, target.id, item.quantity, src.unit_cost],
+      );
+      totalCost += item.quantity * Number(src.unit_cost);
+    }
+    await tx.query('UPDATE stock_transfers SET total_cost = $2 WHERE id = $1', [transferId, totalCost.toFixed(2)]);
+    await audit(tx, actor, {
+      action: 'transfer', module: 'inventory', entityType: 'stock_transfer', entityId: transferId,
+      summary: `${actor.userName} transferred ${d.items.length} batch line(s) worth ${formatMoney(totalCost, settings.general.currency)} to ${dest.rows[0].name} (${transferNo})`,
+      newValues: { transferNo, toBranchId: d.toBranchId, items: d.items },
+    });
+    return { id: transferId, transferNo };
+  });
+}
+
+export async function listTransfers(actor: Actor, q: { page: number; pageSize: number }) {
+  const { limit, offset } = pageParams(q.page, q.pageSize);
+  const { rows } = await pool.query(
+    `SELECT t.id, t.transfer_no, t.created_at, t.notes, t.total_cost, fb.name AS from_branch, tb.name AS to_branch, u.full_name AS created_by_name,
+            (t.from_branch_id = $1) AS outgoing,
+            (SELECT json_agg(json_build_object('productName', p.name, 'batchNumber', b.batch_number, 'quantity', i.quantity) ORDER BY i.id)
+               FROM stock_transfer_items i JOIN products p ON p.id = i.product_id JOIN product_batches b ON b.id = i.from_batch_id
+              WHERE i.transfer_id = t.id) AS items,
+            count(*) OVER() AS total_count
+       FROM stock_transfers t JOIN branches fb ON fb.id = t.from_branch_id JOIN branches tb ON tb.id = t.to_branch_id
+       JOIN users u ON u.id = t.created_by
+      WHERE t.from_branch_id = $1 OR t.to_branch_id = $1
+      ORDER BY t.created_at DESC, t.id DESC LIMIT ${limit} OFFSET ${offset}`,
+    [actor.branchId],
+  );
+  return paginated(rows.map(({ total_count: _t, ...r }) => r), rows[0]?.total_count ?? 0, q.page, q.pageSize);
+}

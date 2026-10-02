@@ -37,6 +37,7 @@ export function referenceLink(m: { referenceType: string | null; referenceId: nu
     case 'product': return `/inventory/products/${m.referenceId}`;
     case 'adjustment': return '/inventory/adjustments';
     case 'sale_return': return '/sales/returns';
+    case 'transfer': return '/inventory/transfers';
     default: return null;
   }
 }

@@ -84,7 +84,7 @@ export async function dashboard(actor: Actor, period: DashboardPeriod) {
            SELECT COALESCE(sum(b.quantity_on_hand), 0)::int AS sellable FROM product_batches b
             WHERE b.product_id = p.id AND b.branch_id = $1 AND b.status = 'active' AND (b.expiry_date IS NULL OR b.expiry_date >= $2::date)
          ) s ON TRUE
-        WHERE p.status = 'active'`,
+        WHERE p.status = 'active' AND EXISTS (SELECT 1 FROM product_batches x WHERE x.product_id = p.id AND x.branch_id = $1)`,
       [actor.branchId, today, settings.inventory.criticalStockPercent],
     );
     const st = stock.rows[0];
@@ -97,12 +97,18 @@ export async function dashboard(actor: Actor, period: DashboardPeriod) {
     };
   }
   if (can(actor, 'suppliers.view') || can(actor, 'reports.financial')) {
+    // Suppliers are company-wide: balances cover deliveries to every branch.
     const sup = await pool.query(
-      `SELECT COALESCE((SELECT sum(total_cost) FROM goods_receipts WHERE branch_id = $1), 0)
+      `SELECT COALESCE((SELECT sum(total_cost) FROM goods_receipts), 0)
             - COALESCE((SELECT sum(sp.amount) FROM supplier_payments sp), 0) AS outstanding,
-              (SELECT count(DISTINCT supplier_id)::int FROM goods_receipts g WHERE g.branch_id = $1 AND g.due_date < $2::date
-                 AND g.total_cost > COALESCE((SELECT sum(amount) FROM supplier_payments WHERE goods_receipt_id = g.id), 0)) AS overdue_suppliers`,
-      [actor.branchId, today],
+              (WITH r AS (
+                 SELECT g.supplier_id, g.due_date, g.total_cost,
+                        sum(g.total_cost) OVER (PARTITION BY g.supplier_id ORDER BY g.received_date, g.id) AS running
+                   FROM goods_receipts g),
+               paid AS (SELECT supplier_id, sum(amount) AS total FROM supplier_payments GROUP BY supplier_id)
+               SELECT count(DISTINCT r.supplier_id)::int FROM r LEFT JOIN paid ON paid.supplier_id = r.supplier_id
+                WHERE r.due_date < $1::date AND r.running - COALESCE(paid.total, 0) > 0) AS overdue_suppliers`,
+      [today],
     );
     kpis.supplierBalances = { value: Number(sup.rows[0].outstanding), overdueSuppliers: sup.rows[0].overdue_suppliers };
   }
@@ -140,6 +146,7 @@ export async function dashboard(actor: Actor, period: DashboardPeriod) {
             WHERE b.product_id = p.id AND b.branch_id = $1 AND b.status = 'active' AND (b.expiry_date IS NULL OR b.expiry_date >= $2::date)
          ) s ON TRUE
         WHERE p.status = 'active' AND s.sellable <= p.reorder_level AND p.reorder_level > 0
+          AND EXISTS (SELECT 1 FROM product_batches x WHERE x.product_id = p.id AND x.branch_id = $1)
         ORDER BY (s.sellable::float / NULLIF(p.reorder_level, 0)) ASC, p.name LIMIT 7`,
       [actor.branchId, today, settings.inventory.criticalStockPercent],
     )).rows;

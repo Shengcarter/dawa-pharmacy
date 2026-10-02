@@ -11,7 +11,7 @@ import { Badge, Button, Card, DataTable, EmptyState, PageHeader, Pagination, Sea
 import { initials } from '@/components/layout/Topbar';
 import { UserFormModal } from './UserForm';
 
-interface UserRow { id: number; fullName: string; email: string; phone: string | null; jobTitle: string | null; status: string; lastLoginAt: string | null; locked: boolean; roles: { id: number; code: string; name: string }[] }
+interface UserRow { id: number; branchName: string; fullName: string; email: string; phone: string | null; jobTitle: string | null; status: string; lastLoginAt: string | null; locked: boolean; roles: { id: number; code: string; name: string }[] }
 
 export function UsersPage() {
   const { can } = useAuth();
@@ -49,6 +49,7 @@ export function UsersPage() {
               ),
             },
             { key: 'email', header: 'Email', cell: (r) => r.email, hideBelow: 'lg' },
+            { key: 'branch', header: 'Branch', cell: (r) => r.branchName, hideBelow: 'md' },
             { key: 'roles', header: 'Roles', cell: (r) => <div className="flex flex-wrap gap-1">{r.roles.map((x) => <Badge key={x.id} tone="brand">{x.name}</Badge>)}</div> },
             { key: 'last', header: 'Last sign-in', cell: (r) => <span className="text-muted">{r.lastLoginAt ? dateTime(r.lastLoginAt) : 'Never'}</span>, hideBelow: 'md' },
             { key: 'status', header: 'Status', cell: (r) => (r.status === 'suspended' ? <Badge tone="danger" dot>Suspended</Badge> : r.locked ? <Badge tone="warning" dot>Locked</Badge> : <Badge tone="success" dot>Active</Badge>) },

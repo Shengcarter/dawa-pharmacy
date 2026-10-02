@@ -5,17 +5,19 @@ import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { applyServerErrors, useZodForm } from '@/lib/forms';
 import { Alert, Button, Field, Input, Modal, Select, useToast } from '@/components/ui';
+import { useBranches } from '@/lib/branches';
 
 export interface RoleOption { id: number; code: string; name: string; description: string | null; isSystem: boolean; permissions: string[]; userCount: number }
 export function useRoles() {
   return useQuery({ queryKey: ['roles'], queryFn: () => api.get<{ roles: RoleOption[]; catalogue: { key: string; label: string; permissions: { code: string; label: string }[] }[] }>('/roles') });
 }
 
-export function UserFormModal({ open, onClose, user, onSaved }: { open: boolean; onClose: () => void; user?: { id: number; fullName: string; email: string; phone: string | null; jobTitle: string | null; status: string; roles: { id: number }[] } | null; onSaved?: (id: number) => void }) {
+export function UserFormModal({ open, onClose, user, onSaved }: { open: boolean; onClose: () => void; user?: { id: number; fullName: string; email: string; phone: string | null; jobTitle: string | null; status: string; branchId?: number; roles: { id: number }[] } | null; onSaved?: (id: number) => void }) {
   const qc = useQueryClient();
   const toast = useToast();
   const { can } = useAuth();
   const roles = useRoles();
+  const branches = useBranches();
   const [error, setError] = useState<string | null>(null);
   const editing = Boolean(user);
   const form = useZodForm(editing ? userUpdateSchema : userCreateSchema);
@@ -23,8 +25,8 @@ export function UserFormModal({ open, onClose, user, onSaved }: { open: boolean;
     if (!open) return;
     setError(null);
     form.reset((user
-      ? { fullName: user.fullName, email: user.email, phone: user.phone ?? '', jobTitle: user.jobTitle ?? '', status: user.status, roleIds: user.roles.map((r) => r.id) }
-      : { fullName: '', email: '', phone: '', jobTitle: '', password: '', roleIds: [] }) as never);
+      ? { fullName: user.fullName, email: user.email, phone: user.phone ?? '', jobTitle: user.jobTitle ?? '', status: user.status, roleIds: user.roles.map((r) => r.id), branchId: user.branchId ?? '' }
+      : { fullName: '', email: '', phone: '', jobTitle: '', password: '', roleIds: [], branchId: '' }) as never);
   }, [open, user, form]);
   const save = useMutation({ mutationFn: (body: unknown) => (user ? api.put<{ id: number }>(`/users/${user.id}`, body) : api.post<{ id: number }>('/users', body)) });
   const submit = form.handleSubmit(async (data) => {
@@ -52,6 +54,13 @@ export function UserFormModal({ open, onClose, user, onSaved }: { open: boolean;
         <Field label="Job title" error={errors.jobTitle?.message}>{(id) => <Input id={id} placeholder="e.g. Pharmacist" {...r('jobTitle')} />}</Field>
         <Field label="Email (sign-in)" required error={errors.email?.message}>{(id) => <Input id={id} type="email" autoComplete="off" {...r('email')} />}</Field>
         <Field label="Phone" error={errors.phone?.message}>{(id) => <Input id={id} type="tel" {...r('phone')} />}</Field>
+        {(branches.data?.length ?? 0) > 1 && (
+          <Field label="Branch" hint="Where this person works; they see and sell that branch's stock.">{(id) => (
+            <Select id={id} placeholder={editing ? undefined : 'Same as mine'} {...r('branchId')}>
+              {branches.data?.filter((b) => b.isActive || b.id === user?.branchId).map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+            </Select>
+          )}</Field>
+        )}
         {!editing ? (
           <Field label="Temporary password" required error={errors.password?.message} hint="10+ characters, upper and lower case and a number. They change it at first sign-in.">
             {(id) => <Input id={id} type="text" autoComplete="new-password" {...r('password')} />}

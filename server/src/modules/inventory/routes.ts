@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { batchUpdateSchema, optionalIsoDate, stockAdjustmentSchema } from '@dawa/shared';
+import { batchUpdateSchema, optionalIsoDate, stockAdjustmentSchema, stockTransferSchema } from '@dawa/shared';
 import { actorOf, requirePermission } from '../../middleware/auth';
 import { sendCsv } from '../../lib/csv';
 import * as inventory from './service';
@@ -101,4 +101,12 @@ inventoryRouter.get('/movements', async (req, res) => {
     return;
   }
   res.json(await inventory.listMovements(actorOf(req), q));
+});
+
+inventoryRouter.get('/transfers', async (req, res) => {
+  res.json(await inventory.listTransfers(actorOf(req), z.object(page).parse(req.query)));
+});
+
+inventoryRouter.post('/transfers', requirePermission('inventory.adjust'), async (req, res) => {
+  res.status(201).json(await inventory.transferStock(actorOf(req), stockTransferSchema.parse(req.body)));
 });

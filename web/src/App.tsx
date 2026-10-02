@@ -28,6 +28,7 @@ const ExpiryPage = p(() => import('./features/inventory/StockPages'), 'ExpiryPag
 const BatchesPage = p(() => import('./features/inventory/StockPages'), 'BatchesPage');
 const AdjustmentsPage = p(() => import('./features/inventory/AdjustmentsPage'), 'AdjustmentsPage');
 const MovementsPage = p(() => import('./features/inventory/MovementsPage'), 'MovementsPage');
+const TransfersPage = p(() => import('./features/inventory/TransfersPage'), 'TransfersPage');
 const LabelsPage = p(() => import('./features/inventory/LabelsPage'), 'LabelsPage');
 const PurchaseOrdersPage = p(() => import('./features/purchasing/PurchaseOrdersPage'), 'PurchaseOrdersPage');
 const PurchaseOrderFormPage = p(() => import('./features/purchasing/PurchaseOrderFormPage'), 'PurchaseOrderFormPage');
@@ -90,6 +91,7 @@ export function App() {
             <Route path="inventory/batches" element={g(['inventory.view'], <BatchesPage />)} />
             <Route path="inventory/adjustments" element={g(['inventory.view'], <AdjustmentsPage />)} />
             <Route path="inventory/movements" element={g(['inventory.view'], <MovementsPage />)} />
+            <Route path="inventory/transfers" element={g(['inventory.view'], <TransfersPage />)} />
             <Route path="inventory/labels" element={g(['products.view'], <LabelsPage />)} />
             <Route path="purchasing/orders" element={g(['purchasing.view'], <PurchaseOrdersPage />)} />
             <Route path="purchasing/orders/new" element={g(['purchasing.manage'], <PurchaseOrderFormPage />)} />

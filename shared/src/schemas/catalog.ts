@@ -147,3 +147,13 @@ export const stockAdjustmentSchema = z.object({
 });
 
 export const expiryDateSchema = isoDate('Expiry date');
+
+export const stockTransferSchema = z.object({
+  toBranchId: z.coerce.number().int().positive('Choose the destination branch'),
+  notes: optionalText(500),
+  items: z
+    .array(z.object({ batchId: z.coerce.number().int().positive(), quantity: quantity('Quantity') }))
+    .min(1, 'Add at least one batch')
+    .max(100)
+    .refine((items) => new Set(items.map((i) => i.batchId)).size === items.length, 'Each batch can appear only once'),
+});

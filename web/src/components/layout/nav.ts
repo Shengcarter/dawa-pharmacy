@@ -41,6 +41,7 @@ export const NAV: NavItem[] = [
       { label: 'Expiry tracking', to: '/inventory/expiry', permission: ['inventory.view'] },
       { label: 'Batch management', to: '/inventory/batches', permission: ['inventory.view'] },
       { label: 'Stock adjustments', to: '/inventory/adjustments', permission: ['inventory.view'] },
+      { label: 'Stock transfers', to: '/inventory/transfers', permission: ['inventory.view'] },
       { label: 'Stock movements', to: '/inventory/movements', permission: ['inventory.view'] },
     ],
   },

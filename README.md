@@ -37,13 +37,14 @@ Built with TypeScript end to end: **React 19 + Vite + Tailwind CSS 4** on the fr
 | **Point of sale** | Keyboard-wedge barcode scanning anywhere on the screen, search by name / generic / SKU / barcode, automatic FEFO batch allocation or manual batch choice, line and cart discounts within the role's limit, customer lookup and quick registration, prescription loading, cash (with change), mobile money, card, bank transfer, store credit, sale on account and split payments, idempotent submission, receipts for 80 mm / 58 mm thermal and A4, shareable digital receipt link and WhatsApp share. |
 | **Invoices & returns** | Invoice list and detail with batch-level lines, payments and returns; record payments on credit invoices; returns with condition (resellable / damaged / opened), refund by cash / mobile money / card / bank or store credit. |
 | **Products** | Full product record (SKU, barcode, generic and brand name, type, category, manufacturer, supplier, dosage form, strength, unit, pack size, purchase / selling / wholesale / minimum prices, VAT, reorder and maximum levels, prescription requirement, batch tracking, status, image, storage instructions), opening stock, internal EAN-13 barcode generation, shelf-label printing, CSV export, bulk status changes. |
-| **Inventory** | Stock by batch with status (in stock / low / critical / out of stock / expired), expiry tracking in buckets (expired, 30, 60, 90 days, safe) with value at risk, batch management (correct expiry, quarantine), stock adjustments (found, lost, damaged, expired disposal, count correction) and an append-only stock movement ledger. |
+| **Inventory** | Stock by batch with status (in stock / low / critical / out of stock / expired), expiry tracking in buckets (expired, 30, 60, 90 days, safe) with value at risk, batch management (correct expiry, quarantine), stock adjustments (found, lost, damaged, expired disposal, count correction), transfers between branches, and an append-only stock movement ledger. |
 | **Purchasing** | Purchase orders (draft → pending approval → ordered → partially received → received, or cancelled) with reorder suggestions, receiving against an order or as a direct delivery — every line creates or tops up a batch with its expiry and cost — and supplier payments with balances and overdue tracking. |
 | **Prescriptions** | Record prescriptions as written (prescriber, facility, registration number, medicines, dosage instructions, quantities, durations, refills), dispense them at the till, partial dispensing and refills, full dispensing history. The software never suggests or substitutes medicines. |
 | **Customers / patients** | Contact details, customer type, optional date of birth / gender / insurance, credit limit, store credit, purchase history and balances. Minimal data by design. |
 | **Expenses** | Categorised expenses with payment method, payee, employee, reference and receipt attachment (image / PDF). Expenses are voided, never deleted. |
 | **Reports** | Sales, product performance, purchases, inventory valuation, profit & loss, expenses, expiry, VAT and staff performance — filterable by date, category, supplier and staff, exportable to CSV, printable / save as PDF. |
 | **Alerts** | Low stock, out of stock, expiring and expired stock, purchase orders waiting for approval or overdue for delivery, overdue supplier payments, failed sales. Alerts resolve themselves when the condition clears. |
+| **Branches** | Several branches in one system: each keeps its own stock, sales, purchases and expenses; staff work in their assigned branch; stock transfers keep batch number, expiry and cost; stock and expiry alerts are shown only to the branch concerned. Suppliers, customers, products and prices are shared. |
 | **Administration** | Users with multiple roles, custom roles with a permission matrix, account lock-out and unlock, admin password reset, sign-in history, settings (pharmacy details and logo, currency, time zone, stock rules, tax and receipt options, alert options, session and retention, automatic backups), audit log with before/after values. |
 | **Everywhere** | Global search (`Ctrl K`), responsive layouts for desktop, tablet and phone, light and dark themes, loading / empty / error states on every page. |
 
@@ -254,6 +255,7 @@ and digital receipts) require `Authorization: Bearer <access token>`. Errors use
 | Prescriptions | `GET/POST /prescriptions`, `GET/PUT /prescriptions/:id`, `POST /prescriptions/:id/cancel` |
 | Expenses | `GET/POST /expenses`, `PUT /expenses/:id`, `POST /expenses/:id/void`, `GET/POST /expenses/:id/receipt`, `GET/POST /expenses/categories` |
 | Reports | `GET /reports/{sales, product-sales, purchases, inventory, profit-loss, expenses, expiry, tax, staff}` — add `format=csv` to download |
+| Branches & transfers | `GET/POST /branches`, `PUT /branches/:id`, `GET/POST /inventory/transfers` |
 | Admin | `/users`, `/roles`, `/settings`, `/audit-logs`, `/backups`, `/notifications`, `/search`, `/dashboard` |
 
 List endpoints accept `page`, `pageSize` (≤ 200), `search`, filters and whitelisted `sort` / `order`, and return
@@ -273,7 +275,7 @@ enforcement, FEFO allocation across batches, refusal to sell expired or insuffic
 batch-cost COGS, VAT, discount limits and minimum prices, prescription enforcement and refills, credit limits and
 payments, idempotent sales, digital receipt privacy, purchase-order approval and partial/over receipt, expired
 deliveries, adjustments and count corrections, the append-only stock ledger, duplicate SKU/barcode and EAN-13 check
-digits, returns with restocking rules and store credit, the profit & loss identity, expense voiding, CSV formula
+digits, transfers between branches (batch identity, limits, branch isolation), returns with restocking rules and store credit, the profit & loss identity, expense voiding, CSV formula
 neutralisation, dashboard visibility by role and human-readable price-change audit entries. GitHub Actions runs
 type checks, tests and the build on every push.
 
@@ -288,8 +290,8 @@ pg_restore --clean --if-exists --no-owner -d "$DATABASE_URL" dawa-YYYYMMDD-HHMMS
 
 ## Known limitations
 
-* The schema and services are branch-aware (every stock and document row carries a branch), but the interface
-  manages a single branch; branch switching and stock transfers between branches are not built yet.
+* Staff work in one assigned branch at a time; a manager moves a person between branches from *Employees & users*.
+  Reports and the dashboard show the signed-in user's branch (supplier balances are company-wide).
 * Selling is in each product's base unit (e.g. strip, bottle); pack size is used for ordering, not for
   pack-versus-unit pricing at the till.
 * Password-reset emails need SMTP settings; without them a manager resets passwords from *Employees & users*.

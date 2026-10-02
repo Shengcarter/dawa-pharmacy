@@ -19,6 +19,8 @@ export interface MovementInput {
   referenceType?: string | null;
   referenceId?: number | null;
   referenceNo?: string | null;
+  /** Transfers write to a batch in another branch; everything else is limited to the actor's branch. */
+  allowOtherBranch?: boolean;
 }
 
 export interface MovementResult {
@@ -38,7 +40,7 @@ export async function applyMovement(tx: Tx, actor: Actor, m: MovementInput): Pro
   );
   const batch = rows[0];
   if (!batch) throw unprocessable('Batch not found.');
-  if (batch.branch_id !== actor.branchId) throw unprocessable('This batch belongs to another branch.');
+  if (batch.branch_id !== actor.branchId && !m.allowOtherBranch) throw unprocessable('This batch belongs to another branch.');
   const before = batch.quantity_on_hand as number;
   const after = before + m.quantity;
   if (after < 0) {

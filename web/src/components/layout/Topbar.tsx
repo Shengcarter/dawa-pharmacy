@@ -61,6 +61,7 @@ export function Topbar({ onMenu }: { onMenu: () => void }) {
               <div className="px-2.5 pb-2 pt-1.5">
                 <p className="text-[13px] font-medium">{user.fullName}</p>
                 <p className="text-[12px] text-muted">{user.email}</p>
+                <p className="text-[12px] text-muted">Branch: {user.branch.name}</p>
                 <p className="mt-1.5 flex flex-wrap gap-1">
                   {user.roles.map((r) => (
                     <span key={r.code} className="rounded bg-brand-50 px-1.5 py-0.5 text-[11px] font-medium text-brand-700">{r.name}</span>

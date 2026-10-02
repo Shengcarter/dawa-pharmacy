@@ -10,7 +10,7 @@ import { Page } from '@/components/layout/AppLayout';
 import { Alert, Badge, Button, Card, DataTable, DetailList, EmptyState, ErrorState, Field, Figure, Input, Modal, PageHeader, PageLoader, SummaryStrip, useToast } from '@/components/ui';
 import { UserFormModal } from './UserForm';
 
-interface UserDetail { id: number; fullName: string; email: string; phone: string | null; jobTitle: string | null; status: string; lastLoginAt: string | null; createdAt: string; mustChangePassword: boolean; locked: boolean; roles: { id: number; code: string; name: string }[]; loginActivity: LoginEvent[]; thisMonth: { transactions: number; revenue: number } }
+interface UserDetail { id: number; branchId: number; branchName: string; fullName: string; email: string; phone: string | null; jobTitle: string | null; status: string; lastLoginAt: string | null; createdAt: string; mustChangePassword: boolean; locked: boolean; roles: { id: number; code: string; name: string }[]; loginActivity: LoginEvent[]; thisMonth: { transactions: number; revenue: number } }
 export interface LoginEvent { event: string; ip: string | null; userAgent: string | null; detail: string | null; createdAt: string; fullName?: string | null; email?: string }
 
 const EVENT_LABELS: Record<string, string> = { login: 'Signed in', login_failed: 'Failed sign-in', logout: 'Signed out', locked: 'Locked after failed attempts', password_reset: 'Password reset', password_changed: 'Password changed', token_reuse: 'Suspicious session reuse — signed out everywhere' };
@@ -68,6 +68,7 @@ export function UserDetailPage() {
         <Card title="Account">
           <DetailList columns={1} items={[
             { label: 'Email', value: u.email },
+            { label: 'Branch', value: u.branchName },
             { label: 'Phone', value: u.phone },
             { label: 'Created', value: dateTime(u.createdAt) },
             { label: 'Password', value: u.mustChangePassword ? 'Temporary — must be changed at next sign-in' : 'Set by the user' },

@@ -24,7 +24,7 @@ import { createSale, recordPayment } from '../../modules/sales/service';
 import { processReturn } from '../../modules/sales/returns';
 import { createPrescription } from '../../modules/prescriptions/service';
 import { createExpense } from '../../modules/expenses/service';
-import { adjustStock } from '../../modules/inventory/service';
+import { adjustStock, transferStock } from '../../modules/inventory/service';
 import { runAllAlerts } from '../../modules/notifications/service';
 import { CATEGORIES, CUSTOMERS, MANUFACTURERS, PRESCRIBERS, PRODUCTS, STAFF, SUPPLIERS, type DemoProduct } from './catalog';
 
@@ -448,6 +448,25 @@ async function main() {
       supplierId: g.supplier_id, goodsReceiptId: g.id, amount: Math.round(Number(g.total_cost) * share), method: 'bank_transfer',
       reference: `TRF${randInt(100000, 999999)}`, paidDate: payDay, notes: null,
     });
+  }
+
+  // ---- A second, smaller branch stocked by transfer -------------------------
+  const mwenge = (await pool.query(
+    `INSERT INTO branches (code, name, address, phone, created_at) VALUES ('MWG', 'Mwenge', 'Sam Nujoma Road, Mwenge, Dar es Salaam', '+255 754 120 335', $1) RETURNING id`,
+    [at(dayAt(12), 9)],
+  )).rows[0].id as number;
+  const transferLines: { batchId: number; quantity: number }[] = [];
+  for (const sku of ['PAR-500-T', 'IBU-400-T', 'ORS-SACH', 'CET-SYR-60', 'HND-SAN-250']) {
+    const b = (await pool.query(
+      `SELECT b.id, b.quantity_on_hand FROM product_batches b JOIN products p ON p.id = b.product_id
+        WHERE p.sku = $1 AND b.branch_id = $2 AND b.status = 'active' AND b.quantity_on_hand > 20 AND (b.expiry_date IS NULL OR b.expiry_date > $3::date)
+        ORDER BY b.expiry_date DESC NULLS LAST LIMIT 1`,
+      [sku, actors.get('emmanuel')!.branchId, today],
+    )).rows[0];
+    if (b) transferLines.push({ batchId: b.id, quantity: Math.min(20, Math.floor(b.quantity_on_hand / 4)) });
+  }
+  if (transferLines.length) {
+    await transferStock(as('emmanuel', at(dayAt(10), 8, 30)), { toBranchId: mwenge, notes: 'Opening stock for the Mwenge counter', items: transferLines });
   }
 
   // ---- Open purchase orders at the end of the story --------------------------
