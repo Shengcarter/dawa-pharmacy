@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { keysOf, PRODUCT_STATUSES, PRODUCT_TYPES, ACTIVE_STATUSES } from '../enums';
 import { isValidEan13 } from '../barcode';
 import {
-  money, nonNegativeInt, optionalId, optionalIsoDate, optionalText, percent, requiredText, isoDate, quantity,
+  optionalNumber, money, nonNegativeInt, optionalId, optionalIsoDate, optionalText, percent, requiredText, isoDate, quantity,
 } from './common';
 
 export const categorySchema = z.object({
@@ -56,11 +56,19 @@ const productBase = z.object({
   packSize: z.coerce.number().int().min(1, 'Pack size must be at least 1').max(10000).default(1),
   purchasePrice: money('Purchase price'),
   sellingPrice: money('Selling price'),
-  packSellingPrice: money('Pack price').optional().nullable().or(z.literal('').transform(() => null)).transform((v) => v ?? null),
-  wholesalePrice: money('Wholesale price').optional().nullable().or(z.literal('').transform(() => null)).transform((v) => v ?? null),
-  minSellingPrice: money('Minimum selling price').optional().nullable().or(z.literal('').transform(() => null)).transform((v) => v ?? null),
+  packSellingPrice: optionalNumber(money('Pack price')),
+  wholesalePrice: optionalNumber(money('Wholesale price')),
+  minSellingPrice: optionalNumber(money('Minimum selling price')),
+  /** Lower unit prices from a quantity (in base units) upwards. */
+  priceBreaks: z
+    .array(z.object({
+      minQuantity: z.coerce.number({ error: 'Enter a quantity' }).int('Whole units only').min(2, 'From 2 units or more').max(1_000_000),
+      unitPrice: money('Price'),
+    }))
+    .max(10, 'Up to 10 quantity prices')
+    .optional(), // left out on update = keep the current quantity prices
   reorderLevel: nonNegativeInt('Reorder level'),
-  maxStockLevel: nonNegativeInt('Maximum stock level').optional().nullable().or(z.literal('').transform(() => null)).transform((v) => v ?? null),
+  maxStockLevel: optionalNumber(nonNegativeInt('Maximum stock level')),
   requiresPrescription: z.boolean().default(false),
   isBatchTracked: z.boolean().default(true),
   taxRate: percent('Tax rate').default(0),
@@ -75,6 +83,19 @@ function priceChecks<T extends z.infer<typeof productBase>>(d: T, ctx: z.Refinem
     ctx.addIssue({ code: 'custom', path: ['packSellingPrice'], message: 'Set units per pack (2 or more) to sell whole packs' });
   if (d.minSellingPrice !== null && d.minSellingPrice > d.sellingPrice)
     ctx.addIssue({ code: 'custom', path: ['minSellingPrice'], message: 'Minimum price cannot exceed the selling price' });
+  if (d.wholesalePrice !== null && d.wholesalePrice > d.sellingPrice)
+    ctx.addIssue({ code: 'custom', path: ['wholesalePrice'], message: 'Wholesale price cannot exceed the selling price' });
+  if (d.wholesalePrice !== null && d.minSellingPrice !== null && d.wholesalePrice < d.minSellingPrice)
+    ctx.addIssue({ code: 'custom', path: ['wholesalePrice'], message: 'Wholesale price is below the minimum selling price' });
+  const seen = new Set<number>();
+  (d.priceBreaks ?? []).forEach((b, i) => {
+    if (seen.has(b.minQuantity)) ctx.addIssue({ code: 'custom', path: ['priceBreaks', i, 'minQuantity'], message: 'This quantity is listed twice' });
+    seen.add(b.minQuantity);
+    if (b.unitPrice <= 0 || b.unitPrice >= d.sellingPrice)
+      ctx.addIssue({ code: 'custom', path: ['priceBreaks', i, 'unitPrice'], message: 'Must be below the selling price' });
+    else if (d.minSellingPrice !== null && b.unitPrice < d.minSellingPrice)
+      ctx.addIssue({ code: 'custom', path: ['priceBreaks', i, 'unitPrice'], message: 'Below the minimum selling price' });
+  });
   if (d.maxStockLevel !== null && d.maxStockLevel > 0 && d.maxStockLevel < d.reorderLevel)
     ctx.addIssue({ code: 'custom', path: ['maxStockLevel'], message: 'Maximum stock must be at least the reorder level' });
 }

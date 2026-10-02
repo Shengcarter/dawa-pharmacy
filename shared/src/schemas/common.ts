@@ -22,6 +22,13 @@ export const money = (label = 'Amount') =>
     .max(99_999_999_999, `${label} is too large`)
     .transform((v) => Math.round(v * 100) / 100);
 
+/**
+ * An optional number: '', null and a missing value all mean "not set" (null).
+ * Converting first would turn an empty form field into 0.
+ */
+export const optionalNumber = <T extends z.ZodType>(schema: T) =>
+  z.preprocess((v) => (v === '' || v === undefined || v === null ? null : v), schema.nullable()).optional().transform((v) => v ?? null);
+
 export const positiveMoney = (label = 'Amount') => money(label).refine((v) => v > 0, `${label} must be greater than zero`);
 
 export const quantity = (label = 'Quantity') =>

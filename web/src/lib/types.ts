@@ -81,6 +81,8 @@ export interface PosProduct {
   minSellingPrice: number | null;
   packSize: number;
   packSellingPrice: number | null;
+  wholesalePrice: number | null;
+  priceBreaks: { minQuantity: number; unitPrice: number }[];
   taxRate: number;
   requiresPrescription: boolean;
   imagePath: string | null;

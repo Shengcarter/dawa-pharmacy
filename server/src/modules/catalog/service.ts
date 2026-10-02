@@ -71,7 +71,7 @@ export async function getProduct(actor: Actor, id: number) {
   const settings = await getSettings();
   const today = await businessToday();
   const { rows } = await pool.query(
-    `SELECT p.*, c.name AS category_name, m.name AS manufacturer_name, sup.name AS supplier_name,
+    `SELECT p.*, ${BREAKS_SQL('p')} AS price_breaks, c.name AS category_name, m.name AS manufacturer_name, sup.name AS supplier_name,
             cu.full_name AS created_by_name, uu.full_name AS updated_by_name,
             s.on_hand, s.sellable, s.stock_value, s.nearest_expiry, s.expired_qty, ${stockStatusSql('$4')} AS stock_status
        FROM products p
@@ -151,6 +151,19 @@ const productColumns = (d: ProductUpdate) => [
   d.storageInstructions, d.packSellingPrice,
 ];
 
+const BREAKS_SQL = (alias: string) => `(SELECT COALESCE(json_agg(json_build_object('minQuantity', pb.min_quantity, 'unitPrice', pb.unit_price::float8)
+   ORDER BY pb.min_quantity), '[]') FROM product_price_breaks pb WHERE pb.product_id = ${alias}.id)`;
+
+async function saveBreaks(tx: Tx, productId: number, breaks: { minQuantity: number; unitPrice: number }[]) {
+  await tx.query('DELETE FROM product_price_breaks WHERE product_id = $1', [productId]);
+  for (const b of breaks) {
+    await tx.query('INSERT INTO product_price_breaks (product_id, min_quantity, unit_price) VALUES ($1, $2, $3)', [productId, b.minQuantity, b.unitPrice]);
+  }
+}
+
+const describeBreaks = (breaks: { minQuantity: number; unitPrice: number }[], cur: string) =>
+  breaks.length ? [...breaks].sort((a, b) => a.minQuantity - b.minQuantity).map((b) => `${b.minQuantity}+ at ${formatMoney(b.unitPrice, cur)}`).join(', ') : 'none';
+
 export async function createProduct(actor: Actor, d: ProductData) {
   return withTransaction(async (tx) => {
     await assertUnique(tx, d.sku, d.barcode);
@@ -166,6 +179,7 @@ export async function createProduct(actor: Actor, d: ProductData) {
       [sku, ...productColumns(d), actor.userId],
     );
     const id = rows[0].id as number;
+    await saveBreaks(tx, id, d.priceBreaks ?? []);
     if (d.openingStock) {
       const batchId = await upsertBatch(tx, actor, {
         productId: id,
@@ -207,7 +221,14 @@ export async function updateProduct(actor: Actor, id: number, d: ProductUpdate &
     await assertUnique(tx, sku, d.barcode, id);
     await assertRefs(tx, d);
     const priceChanges = PRICE_FIELDS.filter(([col, key]) => Number(before[col] ?? -1) !== Number(d[key] ?? -1));
-    if (priceChanges.length && !can(actor, 'products.manage_prices')) {
+    const oldBreaks = (await tx.query(`SELECT ${BREAKS_SQL('p')} AS b FROM products p WHERE p.id = $1`, [id])).rows[0].b as { minQuantity: number; unitPrice: number }[];
+    const key = (b: { minQuantity: number; unitPrice: number }[]) => JSON.stringify([...b].sort((x, y) => x.minQuantity - y.minQuantity).map((x) => [x.minQuantity, Number(x.unitPrice)]));
+    const newBreaks = d.priceBreaks ?? oldBreaks;
+    if (newBreaks.some((b) => b.unitPrice >= d.sellingPrice || (d.minSellingPrice !== null && b.unitPrice < d.minSellingPrice))) {
+      throw unprocessable('A quantity price is no longer between the minimum and selling price. Update the quantity prices too.');
+    }
+    const breaksChanged = key(oldBreaks) !== key(newBreaks);
+    if ((priceChanges.length || breaksChanged) && !can(actor, 'products.manage_prices')) {
       throw forbidden('You do not have permission to change prices.');
     }
     if (before.is_batch_tracked !== d.isBatchTracked) {
@@ -223,6 +244,14 @@ export async function updateProduct(actor: Actor, id: number, d: ProductUpdate &
       [sku, ...productColumns(d), actor.userId, id],
     );
     const cur = settings.general.currency;
+    if (breaksChanged) {
+      await saveBreaks(tx, id, newBreaks);
+      await audit(tx, actor, {
+        action: 'price_change', module: 'products', entityType: 'product', entityId: id,
+        summary: `${actor.userName} changed quantity prices of ${d.name} from ${describeBreaks(oldBreaks, cur)} to ${describeBreaks(newBreaks, cur)}`,
+        oldValues: { priceBreaks: oldBreaks }, newValues: { priceBreaks: newBreaks },
+      });
+    }
     for (const [col, key, label] of priceChanges) {
       await audit(tx, actor, {
         action: 'price_change', module: 'products', entityType: 'product', entityId: id,
@@ -232,7 +261,7 @@ export async function updateProduct(actor: Actor, id: number, d: ProductUpdate &
     }
     const otherChanged = ['name', 'status', 'reorder_level', 'requires_prescription', 'barcode', 'sku']
       .filter((col) => String(before[col] ?? '') !== String(({ name: d.name, status: d.status, reorder_level: d.reorderLevel, requires_prescription: d.requiresPrescription, barcode: d.barcode, sku } as Record<string, unknown>)[col] ?? ''));
-    if (otherChanged.length || !priceChanges.length) {
+    if (otherChanged.length || (!priceChanges.length && !breaksChanged)) {
       await audit(tx, actor, {
         action: 'update', module: 'products', entityType: 'product', entityId: id,
         summary: `${actor.userName} updated ${d.name}${otherChanged.length ? ` (${otherChanged.join(', ')})` : ''}`,
@@ -311,7 +340,7 @@ export async function posSearch(actor: Actor, term: string, limit = 12) {
   }
   const { rows } = await pool.query(
     `SELECT p.id, p.sku, p.barcode, p.name, p.generic_name, p.strength, p.dosage_form, p.unit, p.selling_price, p.min_selling_price,
-            p.pack_size, p.pack_selling_price,
+            p.pack_size, p.pack_selling_price, p.wholesale_price, ${BREAKS_SQL('p')} AS price_breaks,
             p.tax_rate, p.requires_prescription, p.image_path,
             COALESCE(json_agg(json_build_object(
               'id', b.id, 'batchNumber', b.batch_number, 'expiryDate', b.expiry_date, 'quantity', b.quantity_on_hand,

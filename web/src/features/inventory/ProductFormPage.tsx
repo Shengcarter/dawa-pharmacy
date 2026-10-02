@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ChevronDown, ChevronRight } from 'lucide-react';
-import { useWatch } from 'react-hook-form';
+import { ChevronDown, ChevronRight, Plus, Trash2 } from 'lucide-react';
+import { useFieldArray, useWatch } from 'react-hook-form';
 import { DOSAGE_FORMS, PRODUCT_STATUSES, PRODUCT_TYPES, UNITS, productSchema } from '@dawa/shared';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
@@ -10,7 +10,7 @@ import { applyServerErrors, useZodForm } from '@/lib/forms';
 import { useFormat } from '@/lib/settings';
 import type { Option } from '@/lib/types';
 import { Page } from '@/components/layout/AppLayout';
-import { Alert, Button, Card, Checkbox, ErrorState, Field, FormSection, Input, PageHeader, PageLoader, Select, Textarea, useToast } from '@/components/ui';
+import { Alert, Button, Card, Checkbox, ErrorState, Field, FormSection, IconButton, Input, PageHeader, PageLoader, Select, Textarea, useToast } from '@/components/ui';
 import { useCategories } from './ProductsPage';
 
 export function useManufacturers() {
@@ -41,7 +41,7 @@ export function ProductFormPage() {
   const form = useZodForm(productSchema, {
     defaultValues: {
       productType: 'tablet', unit: 'strip', packSize: 1, reorderLevel: settings?.inventory.defaultReorderLevel ?? 20,
-      isBatchTracked: true, requiresPrescription: false, taxRate: settings?.sales.defaultTaxRate ?? 0, status: 'active',
+      isBatchTracked: true, requiresPrescription: false, taxRate: settings?.sales.defaultTaxRate ?? 0, status: 'active', priceBreaks: [],
     } as never,
   });
   useEffect(() => {
@@ -54,9 +54,11 @@ export function ProductFormPage() {
       sellingPrice: p.sellingPrice, packSellingPrice: empty(p.packSellingPrice), wholesalePrice: empty(p.wholesalePrice), minSellingPrice: empty(p.minSellingPrice), reorderLevel: p.reorderLevel,
       maxStockLevel: empty(p.maxStockLevel), requiresPrescription: p.requiresPrescription, isBatchTracked: p.isBatchTracked, taxRate: p.taxRate,
       status: p.status, description: empty(p.description), storageInstructions: empty(p.storageInstructions),
+      priceBreaks: (p.priceBreaks as { minQuantity: number; unitPrice: number }[] | undefined) ?? [],
     } as never);
   }, [existing.data, form]);
 
+  const breaks = useFieldArray({ control: form.control, name: 'priceBreaks' as never });
   const [cost, price, tracked] = useWatch({ control: form.control, name: ['purchasePrice', 'sellingPrice', 'isBatchTracked'] }) as [unknown, unknown, boolean];
   const margin = Number(price) > 0 && Number(cost) >= 0 ? ((Number(price) - Number(cost)) / Number(price)) * 100 : null;
 
@@ -155,10 +157,39 @@ export function ProductFormPage() {
             <Field label="Pack price" error={errors.packSellingPrice?.message} hint="Optional — price for a whole pack, so the till can sell either single units or the full pack.">
               {(id) => <Input id={id} {...num} prefix={currency} disabled={!canPrice} {...r('packSellingPrice')} />}
             </Field>
-            <Field label="Wholesale price" error={errors.wholesalePrice?.message}>{(id) => <Input id={id} {...num} prefix={currency} disabled={!canPrice} {...r('wholesalePrice')} />}</Field>
+            <Field label="Wholesale price" error={errors.wholesalePrice?.message} hint="Charged automatically to customers whose type is Wholesale.">
+              {(id) => <Input id={id} {...num} prefix={currency} disabled={!canPrice} {...r('wholesalePrice')} />}
+            </Field>
             <Field label="Minimum selling price" error={errors.minSellingPrice?.message} hint="Discounts cannot go below this without override permission.">
               {(id) => <Input id={id} {...num} prefix={currency} disabled={!canPrice} {...r('minSellingPrice')} />}
             </Field>
+            <div className="space-y-2 sm:col-span-2">
+              <div>
+                <p className="text-[13px] font-medium">Quantity prices</p>
+                <p className="text-[12px] text-muted">
+                  Lower price per {String(form.watch('unit') || 'unit')} once a sale reaches a quantity (single units and packs count together). The customer always gets the lowest price they qualify for.
+                </p>
+              </div>
+              {breaks.fields.map((f, i) => {
+                const e = (errors.priceBreaks as unknown as { minQuantity?: { message?: string }; unitPrice?: { message?: string } }[] | undefined)?.[i];
+                return (
+                  <div key={f.id} className="flex items-start gap-2">
+                    <Field label="From" className="w-36" error={e?.minQuantity?.message}>
+                      {(id) => <Input id={id} {...num} suffix="or more" disabled={!canPrice} {...r(`priceBreaks.${i}.minQuantity`)} invalid={!!e?.minQuantity} />}
+                    </Field>
+                    <Field label="Price each" className="w-44" error={e?.unitPrice?.message}>
+                      {(id) => <Input id={id} {...num} prefix={currency} disabled={!canPrice} {...r(`priceBreaks.${i}.unitPrice`)} invalid={!!e?.unitPrice} />}
+                    </Field>
+                    {canPrice && <IconButton label="Remove quantity price" size="sm" className="mt-6" onClick={() => breaks.remove(i)}><Trash2 className="size-3.5" /></IconButton>}
+                  </div>
+                );
+              })}
+              {canPrice && breaks.fields.length < 10 && (
+                <Button type="button" size="sm" icon={<Plus className="size-3.5" />} onClick={() => breaks.append({ minQuantity: '', unitPrice: '' } as never)}>
+                  Add quantity price
+                </Button>
+              )}
+            </div>
             <Field label="VAT rate" error={errors.taxRate?.message} hint={settings?.sales.taxInclusive ? 'Prices include VAT.' : 'VAT is added on top of prices.'}>
               {(id) => <Select id={id} disabled={!canPrice} {...r('taxRate')}><option value="0">Exempt / 0%</option><option value="18">Standard 18%</option></Select>}
             </Field>

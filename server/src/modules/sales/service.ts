@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import {
-  allocateCents, computeCart, formatMoney, fromCents, toCents, type PaymentMethod,
+  allocateCents, computeCart, formatMoney, fromCents, resolvePrice, toCents, type PaymentMethod, type PriceBreak,
 } from '@dawa/shared';
 import type { z } from 'zod';
 import type { saleSchema } from '@dawa/shared';
@@ -28,6 +28,8 @@ interface ProductRow {
   min_selling_price: number | null;
   pack_size: number;
   pack_selling_price: number | null;
+  wholesale_price: number | null;
+  price_breaks: PriceBreak[];
   tax_rate: number;
   requires_prescription: boolean;
 }
@@ -81,7 +83,9 @@ async function createSaleTx(tx: Tx, actor: Actor, input: SaleData) {
   // ---- Products -----------------------------------------------------------
   const productIds = [...new Set(input.items.map((i) => i.productId))];
   const { rows: productRows } = await tx.query<ProductRow>(
-    `SELECT id, name, sku, status, selling_price, min_selling_price, pack_size, pack_selling_price, tax_rate, requires_prescription
+    `SELECT id, name, sku, status, selling_price, min_selling_price, pack_size, pack_selling_price, wholesale_price, tax_rate, requires_prescription,
+            (SELECT COALESCE(json_agg(json_build_object('minQuantity', pb.min_quantity, 'unitPrice', pb.unit_price::float8)), '[]')
+               FROM product_price_breaks pb WHERE pb.product_id = products.id) AS price_breaks
        FROM products WHERE id = ANY($1::int[]) FOR SHARE`,
     [productIds],
   );
@@ -97,7 +101,7 @@ async function createSaleTx(tx: Tx, actor: Actor, input: SaleData) {
 
   // ---- Customer -----------------------------------------------------------
   let customerId = input.customerId;
-  let customer: { id: number; full_name: string; status: string; credit_limit: number; store_credit_balance: number } | null = null;
+  let customer: { id: number; full_name: string; status: string; customer_type: string; credit_limit: number; store_credit_balance: number } | null = null;
 
   // ---- Prescription -------------------------------------------------------
   let prescription: { id: number; rx_number: string; customer_id: number; status: string; valid_until: string | null } | null = null;
@@ -123,7 +127,7 @@ async function createSaleTx(tx: Tx, actor: Actor, input: SaleData) {
   }
   if (customerId) {
     const r = await tx.query(
-      'SELECT id, full_name, status, credit_limit, store_credit_balance FROM customers WHERE id = $1 FOR UPDATE',
+      'SELECT id, full_name, status, customer_type, credit_limit, store_credit_balance FROM customers WHERE id = $1 FOR UPDATE',
       [customerId],
     );
     customer = r.rows[0] ?? null;
@@ -149,14 +153,29 @@ async function createSaleTx(tx: Tx, actor: Actor, input: SaleData) {
     });
 
   // ---- Prices, discounts and prescription rules ---------------------------
-  const cartInput = lines.map((l) => {
+  // Quantity prices look at the product's total base units in the cart.
+  const productBase = new Map<number, number>();
+  for (const l of lines) productBase.set(l.productId, (productBase.get(l.productId) ?? 0) + l.baseQuantity);
+  const wholesaleCustomer = customer?.customer_type === 'wholesale';
+  const priced = lines.map((l) => {
     const p = products.get(l.productId)!;
-    const listPrice = l.sellBy === 'pack' ? p.pack_selling_price! : p.selling_price;
-    const unitPrice = l.unitPrice ?? listPrice;
-    if (toCents(unitPrice) !== toCents(listPrice) && !can(actor, 'pos.discount_override')) {
+    const list = resolvePrice(
+      {
+        sellingPrice: Number(p.selling_price), packSize: p.pack_size, packSellingPrice: p.pack_selling_price === null ? null : Number(p.pack_selling_price),
+        wholesalePrice: p.wholesale_price === null ? null : Number(p.wholesale_price), priceBreaks: p.price_breaks,
+      },
+      { sellBy: l.sellBy, productBaseQuantity: productBase.get(l.productId)!, wholesaleCustomer },
+    );
+    const unitPrice = l.unitPrice ?? list.price;
+    const manual = toCents(unitPrice) !== toCents(list.price);
+    if (manual && !can(actor, 'pos.discount_override')) {
       throw forbidden(`You cannot change the price of ${p.name}.`);
     }
-    return { quantity: l.quantity, unitPriceCents: toCents(unitPrice), discountCents: toCents(l.discount), taxRate: Number(p.tax_rate) };
+    return { listPrice: list.price, source: manual ? ('manual' as const) : list.source, unitPrice };
+  });
+  const cartInput = lines.map((l, i) => {
+    const p = products.get(l.productId)!;
+    return { quantity: l.quantity, unitPriceCents: toCents(priced[i].unitPrice), discountCents: toCents(l.discount), taxRate: Number(p.tax_rate) };
   });
   const totals = computeCart(cartInput, toCents(input.cartDiscount), settings.sales.taxInclusive);
   if (totals.discountCents > 0 && !can(actor, 'pos.discount') && !can(actor, 'pos.discount_override')) {
@@ -170,7 +189,9 @@ async function createSaleTx(tx: Tx, actor: Actor, input: SaleData) {
       throw forbidden(`Discount on ${p.name} is ${pct.toFixed(1)}%, above your limit of ${settings.sales.maxDiscountPercent}%.`);
     }
     const effectiveUnit = (t.grossCents - t.discountCents) / l.baseQuantity;
-    if (p.min_selling_price !== null && effectiveUnit < toCents(p.min_selling_price) - 1e-9 && !can(actor, 'pos.discount_override')) {
+    // A price rule the manager set (wholesale, quantity, pack) may itself sit below the minimum; only discounts below it are blocked.
+    const floor = p.min_selling_price === null ? null : Math.min(toCents(p.min_selling_price), toCents(priced[i].listPrice) / l.unitsPer);
+    if (floor !== null && effectiveUnit < floor - 1e-9 && !can(actor, 'pos.discount_override')) {
       throw forbidden(`${p.name} cannot be sold below its minimum price of ${formatMoney(p.min_selling_price, cur)}.`);
     }
   });
@@ -270,10 +291,10 @@ async function createSaleTx(tx: Tx, actor: Actor, input: SaleData) {
     for (const [j, part] of parts.entries()) {
       await tx.query(
         `INSERT INTO sale_items (sale_id, product_id, batch_id, quantity, unit_price, discount_amount, tax_rate, net_amount, tax_amount,
-                                 line_total, unit_cost, prescription_item_id, units_per_sale_unit)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+                                 line_total, unit_cost, prescription_item_id, units_per_sale_unit, price_source)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
         [saleId, l.productId, part.batchId, part.quantity, fromCents(cartInput[i].unitPriceCents), fromCents(discount[j]),
-         cartInput[i].taxRate, fromCents(net[j]), fromCents(tax[j]), fromCents(total[j]), part.unitCost, rxItem?.id ?? null, l.unitsPer],
+         cartInput[i].taxRate, fromCents(net[j]), fromCents(tax[j]), fromCents(total[j]), part.unitCost, rxItem?.id ?? null, l.unitsPer, priced[i].source],
       );
       await applyMovement(tx, actor, {
         batchId: part.batchId, quantity: -part.quantity, type: 'sale',
@@ -378,7 +399,7 @@ export async function getSale(actor: Actor, id: number) {
   if (!can(actor, 'sales.view_all') && sale.cashier_id !== actor.userId) throw forbidden('You can only view your own sales.');
   const [items, payments, returns] = await Promise.all([
     pool.query(
-      `SELECT si.id, si.product_id, si.batch_id, si.quantity, si.quantity_returned, si.unit_price, si.units_per_sale_unit, p.pack_size, si.discount_amount, si.tax_rate,
+      `SELECT si.id, si.product_id, si.batch_id, si.quantity, si.quantity_returned, si.unit_price, si.units_per_sale_unit, si.price_source, p.pack_size, si.discount_amount, si.tax_rate,
               si.net_amount, si.tax_amount, si.line_total, si.unit_cost, p.name AS product_name, p.sku, p.unit, p.strength,
               b.batch_number, b.expiry_date
          FROM sale_items si JOIN products p ON p.id = si.product_id JOIN product_batches b ON b.id = si.batch_id

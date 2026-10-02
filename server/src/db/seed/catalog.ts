@@ -121,6 +121,7 @@ export const CUSTOMERS = [
   { fullName: 'Fatma Salim', phone: '+255717300654', customerType: 'regular', gender: 'female', dateOfBirth: '1958-09-30', creditLimit: 100_000 },
   { fullName: 'Kelvin Shirima', phone: '+255765902341', customerType: 'walk_in', gender: 'male' },
   { fullName: 'Upendo Day Care Centre', phone: '+255222774410', customerType: 'corporate', creditLimit: 500_000 },
+  { fullName: 'Mbezi Duka la Dawa Muhimu', phone: '+255713448902', email: 'orders@mbezidawa.co.tz', customerType: 'wholesale', address: 'Mbezi Beach, Dar es Salaam', creditLimit: 1_500_000 },
 ] as const;
 
 export const STAFF = [

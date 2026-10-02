@@ -14,7 +14,7 @@ import { ReceiptModal } from './ReceiptModal';
 
 interface SaleItem {
   id: number; productId: number; batchId: number; quantity: number; quantityReturned: number; unitPrice: number; discountAmount: number;
-  taxRate: number; netAmount: number; taxAmount: number; lineTotal: number; unitCost?: number; productName: string; sku: string; unitsPerSaleUnit: number;
+  taxRate: number; netAmount: number; taxAmount: number; lineTotal: number; unitCost?: number; productName: string; sku: string; unitsPerSaleUnit: number; priceSource: 'standard' | 'pack' | 'wholesale' | 'quantity' | 'manual';
   unit: string; batchNumber: string; expiryDate: string | null;
 }
 export interface SaleDetail {
@@ -82,7 +82,10 @@ export function SaleDetailPage() {
                       </td>
                       <td className="px-3 py-2.5 text-muted max-md:hidden">{i.batchNumber}{i.expiryDate && <span className="block text-[11.5px]">exp {date(i.expiryDate)}</span>}</td>
                       <td className="px-3 py-2.5 text-right num">{i.unitsPerSaleUnit > 1 ? <>{i.quantity / i.unitsPerSaleUnit} × pack<span className="block text-[11.5px] text-muted">{i.quantity} {i.unit}</span></> : i.quantity}</td>
-                      <td className="px-3 py-2.5 text-right num">{amount(i.unitPrice)}</td>
+                      <td className="px-3 py-2.5 text-right num">
+                        {amount(i.unitPrice)}
+                        {PRICE_SOURCE_LABELS[i.priceSource] && <span className="block text-[11.5px] text-muted">{PRICE_SOURCE_LABELS[i.priceSource]}</span>}
+                      </td>
                       <td className="px-3 py-2.5 text-right num max-sm:hidden">{i.discountAmount > 0 ? amount(i.discountAmount) : '—'}</td>
                       <td className="px-4 py-2.5 text-right font-medium num">{amount(i.lineTotal)}</td>
                     </tr>
@@ -287,3 +290,6 @@ function ReturnModal({ sale, open, onClose }: { sale: SaleDetail; open: boolean;
     </Modal>
   );
 }
+
+/** Shown under the unit price when a price rule (not the standard price) set it. */
+const PRICE_SOURCE_LABELS: Partial<Record<string, string>> = { wholesale: 'Wholesale price', quantity: 'Quantity price', manual: 'Price changed at till' };

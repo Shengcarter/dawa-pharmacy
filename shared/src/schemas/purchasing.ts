@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { keysOf, SUPPLIER_PAYMENT_METHODS } from '../enums';
-import { id, isoDate, money, optionalIsoDate, optionalText, percent, positiveMoney, quantity, requiredText } from './common';
+import { id, isoDate, money, optionalIsoDate, optionalNumber, optionalText, percent, positiveMoney, quantity, requiredText } from './common';
 
 export const purchaseOrderItemSchema = z.object({
   productId: id('Product'),
@@ -45,7 +45,7 @@ export const receiveItemSchema = z
     expiryDate: optionalIsoDate('Expiry date'),
     quantity: quantity('Quantity received'),
     unitCost: money('Purchase price'),
-    sellingPrice: money('Selling price').optional().nullable().or(z.literal('').transform(() => null)).transform((v) => v ?? null),
+    sellingPrice: optionalNumber(money('Selling price')),
   })
   .superRefine((d, ctx) => {
     if (d.manufactureDate && d.expiryDate && d.manufactureDate >= d.expiryDate)

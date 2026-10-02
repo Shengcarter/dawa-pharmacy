@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ClipboardList, Minus, PackageSearch, Plus, ScanLine, Search, ShoppingCart, Trash2, X } from 'lucide-react';
-import { computeCart, fromCents, toCents } from '@dawa/shared';
+import { computeCart, fromCents, nextPriceBreak, resolvePrice, toCents, type PriceBreak, type ResolvedPrice } from '@dawa/shared';
 import { api, ApiError } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { useDebounced } from '@/lib/hooks';
@@ -28,13 +28,29 @@ export interface CartLine {
   prescriptionItemId?: number;
 }
 
-/** Price per sold unit and the most that can be sold, for the line's selling mode. */
+/** The most that can be sold on a line, in its selling mode (units or whole packs). */
 export function lineMode(l: CartLine) {
-  const pack = l.sellBy === 'pack';
-  return {
-    price: pack ? l.product.packSellingPrice ?? l.product.sellingPrice : l.product.sellingPrice,
-    max: pack ? Math.floor(l.product.sellable / l.product.packSize) : l.product.sellable,
-  };
+  return { max: l.sellBy === 'pack' ? Math.floor(l.product.sellable / l.product.packSize) : l.product.sellable };
+}
+
+export type LinePrice = ResolvedPrice & { next: PriceBreak | null };
+
+/**
+ * Prices every cart line with the same rules the API applies (wholesale
+ * customer, quantity prices on the product's total units, pack price), plus
+ * the next quantity price the cashier could point out.
+ */
+export function priceCart(cart: CartLine[], customer: CustomerOption | null): Map<string, LinePrice> {
+  const base = new Map<number, number>();
+  for (const l of cart) base.set(l.product.id, (base.get(l.product.id) ?? 0) + l.quantity * (l.sellBy === 'pack' ? l.product.packSize : 1));
+  const wholesaleCustomer = customer?.customerType === 'wholesale';
+  return new Map(cart.map((l) => {
+    const p = { ...l.product, priceBreaks: l.product.priceBreaks ?? [], wholesalePrice: l.product.wholesalePrice ?? null };
+    const productBaseQuantity = base.get(l.product.id)!;
+    const r = resolvePrice(p, { sellBy: l.sellBy, productBaseQuantity, wholesaleCustomer });
+    const perUnit = l.sellBy === 'pack' ? r.price / l.product.packSize : r.price;
+    return [l.key, { ...r, next: nextPriceBreak(p, productBaseQuantity, perUnit) }];
+  }));
 }
 
 /** Keyboard-wedge barcode scanners type fast and finish with Enter. */
@@ -96,9 +112,10 @@ export function PosPage() {
   const canDiscount = can('pos.discount', 'pos.discount_override');
   const canOverride = can('pos.discount_override');
 
+  const prices = useMemo(() => priceCart(cart, customer), [cart, customer]);
   const totals = useMemo(
-    () => computeCart(cart.map((l) => ({ quantity: l.quantity, unitPriceCents: toCents(lineMode(l).price), discountCents: toCents(l.discount), taxRate: Number(l.product.taxRate) })), toCents(cartDiscount), taxInclusive),
-    [cart, cartDiscount, taxInclusive],
+    () => computeCart(cart.map((l) => ({ quantity: l.quantity, unitPriceCents: toCents(prices.get(l.key)!.price), discountCents: toCents(l.discount), taxRate: Number(l.product.taxRate) })), toCents(cartDiscount), taxInclusive),
+    [cart, prices, cartDiscount, taxInclusive],
   );
 
   const addProduct = useCallback(
@@ -360,7 +377,7 @@ export function PosPage() {
                           <Plus className="size-3.5" />
                         </button>
                       </div>
-                      <span className="text-[12px] text-muted num">× {amount(lineMode(l).price)}</span>
+                      <span className="text-[12px] text-muted num">× {amount(prices.get(l.key)!.price)}</span>
                       {l.product.packSellingPrice && l.product.packSize > 1 && !l.prescriptionItemId && (
                         <div role="group" aria-label="Sell by" className="flex rounded-md border border-line p-0.5 text-[11.5px]">
                           {(['unit', 'pack'] as const).map((mode) => (
@@ -378,6 +395,7 @@ export function PosPage() {
                       )}
                       <span className="ml-auto text-[13.5px] font-semibold num">{amount(fromCents(t.totalCents))}</span>
                     </div>
+                    <PriceNote line={l} price={prices.get(l.key)!} amount={amount} />
                     {canDiscount && (
                       <div className="mt-2 flex items-center gap-2 text-[12px]">
                         <span className="text-muted">Discount</span>
@@ -450,6 +468,23 @@ export function PosPage() {
       />
       <PrescriptionPicker open={rxPicker} onClose={() => setRxPicker(false)} onPick={(rx) => { loadPrescription(rx); setRxPicker(false); }} today={today()} />
       <ReceiptModal saleId={receiptFor} onClose={() => { setReceiptFor(null); searchRef.current?.focus(); }} title="Sale complete" />
+    </div>
+  );
+}
+
+/** Which price rule applied to a line, and the next quantity price within reach. */
+function PriceNote({ line, price, amount }: { line: CartLine; price: LinePrice; amount: (v: number) => string }) {
+  if (price.source !== 'wholesale' && price.source !== 'quantity' && !price.next) return null;
+  const unit = line.product.unit;
+  return (
+    <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[11.5px]">
+      {price.source === 'wholesale' && <Badge tone="brand">Wholesale price</Badge>}
+      {price.source === 'quantity' && price.priceBreak && <Badge tone="brand">{price.priceBreak.minQuantity}+ {unit} price</Badge>}
+      {price.next && (
+        <span className="text-muted">
+          {price.next.minQuantity}+ {unit}: <span className="num">{amount(price.next.unitPrice)}</span> each
+        </span>
+      )}
     </div>
   );
 }

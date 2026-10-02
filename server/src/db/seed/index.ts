@@ -139,6 +139,12 @@ async function main() {
     supplierIds.push(r.id);
   }
 
+  // Quantity prices for fast movers that clinics and shops buy in bulk.
+  const QUANTITY_PRICES: Record<string, { minQuantity: number; unitPrice: number }[]> = {
+    'PAR-500-T': [{ minQuantity: 30, unitPrice: 650 }, { minQuantity: 100, unitPrice: 600 }],
+    'IBU-400-T': [{ minQuantity: 30, unitPrice: 950 }],
+    'OME-20-C': [{ minQuantity: 20, unitPrice: 1900 }],
+  };
   const otcPopularity = PRODUCTS.filter((p) => !p.rx).reduce((a, p) => a + p.pop, 0);
   const rxPopularity = PRODUCTS.filter((p) => p.rx).reduce((a, p) => a + p.pop, 0);
   const products: SeededProduct[] = [];
@@ -148,7 +154,7 @@ async function main() {
       sku: p.sku, barcode, name: p.name, genericName: p.generic, brandName: p.brand, productType: p.type,
       categoryId: categoryIds.get(p.category), manufacturerId: manufacturerIds.get(p.manufacturer), defaultSupplierId: supplierIds[p.supplier],
       dosageForm: p.form, strength: p.strength, unit: p.unit, packSize: p.pack, purchasePrice: p.cost, sellingPrice: p.price,
-      wholesalePrice: Math.round((p.price * 0.85) / 50) * 50, packSellingPrice: p.packPrice ?? null, minSellingPrice: p.min ?? null, reorderLevel: p.reorder,
+      wholesalePrice: Math.max(Math.round((p.price * 0.85) / 50) * 50, p.min ?? 0), priceBreaks: QUANTITY_PRICES[p.sku] ?? [], packSellingPrice: p.packPrice ?? null, minSellingPrice: p.min ?? null, reorderLevel: p.reorder,
       maxStockLevel: p.max ?? null, requiresPrescription: Boolean(p.rx), isBatchTracked: p.tracked !== false, taxRate: p.tax ?? 0,
       status: 'active', description: null, storageInstructions: p.storage ?? 'Store below 30°C in a dry place, away from direct sunlight.',
     });

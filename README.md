@@ -34,9 +34,9 @@ Built with TypeScript end to end: **React 19 + Vite + Tailwind CSS 4** on the fr
 | Area | What it does |
 | --- | --- |
 | **Dashboard** | Today's sales and transactions (compared with the same time yesterday), gross profit, stock value, low stock, expiry risk, supplier and customer balances, sales chart (today / 7 days / 30 days / 3 months / 12 months), top sellers, restock and expiry lists, recent transactions. Each figure is shown only to roles allowed to see it. |
-| **Point of sale** | Keyboard-wedge barcode scanning anywhere on the screen, search by name / generic / SKU / barcode, sell by unit or by whole pack at the pack price, automatic FEFO batch allocation or manual batch choice, line and cart discounts within the role's limit, customer lookup and quick registration, prescription loading, cash (with change), mobile money, card, bank transfer, store credit, sale on account and split payments, idempotent submission, receipts for 80 mm / 58 mm thermal and A4, shareable digital receipt link and WhatsApp share. |
+| **Point of sale** | Keyboard-wedge barcode scanning anywhere on the screen, search by name / generic / SKU / barcode, sell by unit or by whole pack at the pack price, wholesale and quantity prices applied automatically, automatic FEFO batch allocation or manual batch choice, line and cart discounts within the role's limit, customer lookup and quick registration, prescription loading, cash (with change), mobile money, card, bank transfer, store credit, sale on account and split payments, idempotent submission, receipts for 80 mm / 58 mm thermal and A4, shareable digital receipt link and WhatsApp share. |
 | **Invoices & returns** | Invoice list and detail with batch-level lines, payments and returns; record payments on credit invoices; returns with condition (resellable / damaged / opened), refund by cash / mobile money / card / bank or store credit. |
-| **Products** | Full product record (SKU, barcode, generic and brand name, type, category, manufacturer, supplier, dosage form, strength, unit, pack size, purchase / selling / pack / wholesale / minimum prices, VAT, reorder and maximum levels, prescription requirement, batch tracking, status, image, storage instructions), opening stock, internal EAN-13 barcode generation, shelf-label printing, CSV export, bulk status changes. |
+| **Products** | Full product record (SKU, barcode, generic and brand name, type, category, manufacturer, supplier, dosage form, strength, unit, pack size, purchase / selling / pack / wholesale / minimum prices, quantity prices, VAT, reorder and maximum levels, prescription requirement, batch tracking, status, image, storage instructions), opening stock, internal EAN-13 barcode generation, shelf-label printing, CSV export, bulk status changes. |
 | **Inventory** | Stock by batch with status (in stock / low / critical / out of stock / expired), expiry tracking in buckets (expired, 30, 60, 90 days, safe) with value at risk, batch management (correct expiry, quarantine), stock adjustments (found, lost, damaged, expired disposal, count correction), transfers between branches, and an append-only stock movement ledger. |
 | **Purchasing** | Purchase orders (draft → pending approval → ordered → partially received → received, or cancelled) with reorder suggestions, receiving against an order or as a direct delivery — every line creates or tops up a batch with its expiry and cost — and supplier payments with balances and overdue tracking. |
 | **Prescriptions** | Record prescriptions as written (prescriber, facility, registration number, medicines, dosage instructions, quantities, durations, refills), dispense them at the till, partial dispensing and refills, full dispensing history. The software never suggests or substitutes medicines. |
@@ -217,6 +217,11 @@ Principles:
   refused.
 * **Prescription-only medicines** need a recorded, unexpired prescription that covers the quantity, and a user with
   the dispense permission (can be relaxed in Settings).
+* **Prices** — the till charges the lowest price the customer qualifies for: the selling price, the pack price for a
+  whole pack, the wholesale price for customers whose type is *Wholesale*, or a quantity price once the cart holds
+  enough of the product (single units and packs count together). The server works out every price itself; each
+  invoice line records which rule set it. Wholesale and quantity prices must lie between the minimum and the selling
+  price, and every change is in the audit log.
 * **Discounts** above the role's limit, prices changes at the till and sales below a product's minimum price need the
   override permission.
 * **Credit sales** need a customer with a credit limit that covers the new balance.
@@ -244,7 +249,9 @@ create custom roles. Permissions are enforced by the API on every route; the int
 
 * Passwords hashed with **bcrypt** (cost 12); strength rules shared by client and server; never logged.
 * **Short-lived JWT access tokens** kept in memory only, plus **rotating refresh tokens** in an `HttpOnly`,
-  `SameSite=Strict` cookie, stored as SHA-256 hashes. Re-use of a rotated token revokes the whole session family.
+  `SameSite=Strict` cookie, stored as SHA-256 hashes. Re-use of a rotated token revokes the whole session family;
+  a token presented within 30 seconds of its rotation is treated as another tab refreshing at the same moment and
+  gets an access token for the current session (no new cookie). Signing out ends every tab of that sign-in.
   Each request re-checks that the session and user are still active, so logout, suspension and password changes take
   effect immediately.
 * Account **lock-out** after 5 failed sign-ins (15 minutes), sign-in rate limiting, password-reset tokens that are
@@ -292,10 +299,10 @@ npm run typecheck # shared, server and web
 npm run build
 ```
 
-The test suite (Vitest + Supertest, real PostgreSQL) covers sign-in, lock-out, refresh-token rotation and re-use
-detection, CSRF guard, logout and suspension taking effect immediately, password change and reset, role
+The test suite (Vitest + Supertest, real PostgreSQL) covers sign-in, lock-out, refresh-token rotation, re-use detection and parallel tabs,
+CSRF guard, logout and suspension taking effect immediately, password change and reset, role
 enforcement, FEFO allocation across batches, refusal to sell expired or insufficient stock, sale movements and
-batch-cost COGS, VAT, discount limits and minimum prices, prescription enforcement and refills, credit limits and
+batch-cost COGS, VAT, discount limits and minimum prices, pack, wholesale and quantity prices, prescription enforcement and refills, credit limits and
 payments, idempotent sales, digital receipt privacy, purchase-order approval and partial/over receipt, expired
 deliveries, adjustments and count corrections, the append-only stock ledger, duplicate SKU/barcode and EAN-13 check
 digits, transfers between branches (batch identity, limits, branch isolation), returns with restocking rules and store credit, the profit & loss identity, expense voiding, CSV formula
@@ -315,7 +322,7 @@ pg_restore --clean --if-exists --no-owner -d "$DATABASE_URL" dawa-YYYYMMDD-HHMMS
 
 * Staff work in one assigned branch at a time; a manager moves a person between branches from *Employees & users*.
   Reports and the dashboard show the signed-in user's branch (supplier balances are company-wide).
-* A product sells in its base unit or as a whole pack at one optional pack price; there are no tiered,
-  quantity-break or per-customer price lists.
+* Insurance price lists (a fixed price per medicine for each scheme, billed to the insurer) are not included;
+  insurance customers pay normal prices and insurance details are recorded on the customer.
 * Password-reset emails need SMTP settings (see *Email*); without them a manager resets passwords from *Employees & users*.
 * Electronic fiscal device (TRA EFD/VFD) integration is not included; receipts are not fiscal receipts.
