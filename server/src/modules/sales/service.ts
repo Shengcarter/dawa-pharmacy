@@ -26,6 +26,8 @@ interface ProductRow {
   status: string;
   selling_price: number;
   min_selling_price: number | null;
+  pack_size: number;
+  pack_selling_price: number | null;
   tax_rate: number;
   requires_prescription: boolean;
 }
@@ -79,7 +81,7 @@ async function createSaleTx(tx: Tx, actor: Actor, input: SaleData) {
   // ---- Products -----------------------------------------------------------
   const productIds = [...new Set(input.items.map((i) => i.productId))];
   const { rows: productRows } = await tx.query<ProductRow>(
-    `SELECT id, name, sku, status, selling_price, min_selling_price, tax_rate, requires_prescription
+    `SELECT id, name, sku, status, selling_price, min_selling_price, pack_size, pack_selling_price, tax_rate, requires_prescription
        FROM products WHERE id = ANY($1::int[]) FOR SHARE`,
     [productIds],
   );
@@ -88,6 +90,9 @@ async function createSaleTx(tx: Tx, actor: Actor, input: SaleData) {
     const p = products.get(item.productId);
     if (!p) throw unprocessable('A product in the cart no longer exists.');
     if (p.status !== 'active') throw unprocessable(`${p.name} is ${p.status} and cannot be sold.`);
+    if (item.sellBy === 'pack' && (p.pack_selling_price === null || p.pack_size < 2)) {
+      throw unprocessable(`${p.name} is not sold by the pack.`);
+    }
   }
 
   // ---- Customer -----------------------------------------------------------
@@ -129,19 +134,26 @@ async function createSaleTx(tx: Tx, actor: Actor, input: SaleData) {
   // ---- Merge duplicate cart lines (same product + same batch choice) -------
   const merged = new Map<string, (typeof input.items)[number]>();
   for (const item of input.items) {
-    const key = `${item.productId}:${item.batchId ?? 'fefo'}:${item.unitPrice ?? ''}`;
+    const key = `${item.productId}:${item.sellBy}:${item.batchId ?? 'fefo'}:${item.unitPrice ?? ''}`;
     const prev = merged.get(key);
     if (prev) merged.set(key, { ...prev, quantity: prev.quantity + item.quantity, discount: prev.discount + item.discount });
     else merged.set(key, { ...item });
   }
   // Consistent lock order (by product, then batch) avoids deadlocks between tills.
-  const lines = [...merged.values()].sort((a, b) => a.productId - b.productId || (a.batchId ?? 0) - (b.batchId ?? 0));
+  const lines = [...merged.values()]
+    .sort((a, b) => a.productId - b.productId || (a.batchId ?? 0) - (b.batchId ?? 0))
+    .map((l) => {
+      // quantity counts sold units (single units or whole packs); baseQuantity is what leaves the shelf.
+      const unitsPer = l.sellBy === 'pack' ? products.get(l.productId)!.pack_size : 1;
+      return { ...l, unitsPer, baseQuantity: l.quantity * unitsPer };
+    });
 
   // ---- Prices, discounts and prescription rules ---------------------------
   const cartInput = lines.map((l) => {
     const p = products.get(l.productId)!;
-    const unitPrice = l.unitPrice ?? p.selling_price;
-    if (toCents(unitPrice) !== toCents(p.selling_price) && !can(actor, 'pos.discount_override')) {
+    const listPrice = l.sellBy === 'pack' ? p.pack_selling_price! : p.selling_price;
+    const unitPrice = l.unitPrice ?? listPrice;
+    if (toCents(unitPrice) !== toCents(listPrice) && !can(actor, 'pos.discount_override')) {
       throw forbidden(`You cannot change the price of ${p.name}.`);
     }
     return { quantity: l.quantity, unitPriceCents: toCents(unitPrice), discountCents: toCents(l.discount), taxRate: Number(p.tax_rate) };
@@ -157,14 +169,14 @@ async function createSaleTx(tx: Tx, actor: Actor, input: SaleData) {
     if (pct > settings.sales.maxDiscountPercent + 1e-9 && !can(actor, 'pos.discount_override')) {
       throw forbidden(`Discount on ${p.name} is ${pct.toFixed(1)}%, above your limit of ${settings.sales.maxDiscountPercent}%.`);
     }
-    const effectiveUnit = (t.grossCents - t.discountCents) / l.quantity;
+    const effectiveUnit = (t.grossCents - t.discountCents) / l.baseQuantity;
     if (p.min_selling_price !== null && effectiveUnit < toCents(p.min_selling_price) - 1e-9 && !can(actor, 'pos.discount_override')) {
       throw forbidden(`${p.name} cannot be sold below its minimum price of ${formatMoney(p.min_selling_price, cur)}.`);
     }
   });
 
   const rxQuantities = new Map<number, number>();
-  for (const l of lines) rxQuantities.set(l.productId, (rxQuantities.get(l.productId) ?? 0) + l.quantity);
+  for (const l of lines) rxQuantities.set(l.productId, (rxQuantities.get(l.productId) ?? 0) + l.baseQuantity);
   for (const [productId, qty] of rxQuantities) {
     const p = products.get(productId)!;
     const rxItem = rxItems.get(productId);
@@ -223,8 +235,8 @@ async function createSaleTx(tx: Tx, actor: Actor, input: SaleData) {
   for (const l of lines) {
     allocations.push(
       l.batchId
-        ? await allocateChosenBatch(tx, l.productId, actor.branchId, l.batchId, l.quantity, today)
-        : await allocateFefo(tx, l.productId, actor.branchId, l.quantity, today),
+        ? await allocateChosenBatch(tx, l.productId, actor.branchId, l.batchId, l.baseQuantity, today)
+        : await allocateFefo(tx, l.productId, actor.branchId, l.baseQuantity, today),
     );
   }
 
@@ -258,10 +270,10 @@ async function createSaleTx(tx: Tx, actor: Actor, input: SaleData) {
     for (const [j, part] of parts.entries()) {
       await tx.query(
         `INSERT INTO sale_items (sale_id, product_id, batch_id, quantity, unit_price, discount_amount, tax_rate, net_amount, tax_amount,
-                                 line_total, unit_cost, prescription_item_id)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+                                 line_total, unit_cost, prescription_item_id, units_per_sale_unit)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
         [saleId, l.productId, part.batchId, part.quantity, fromCents(cartInput[i].unitPriceCents), fromCents(discount[j]),
-         cartInput[i].taxRate, fromCents(net[j]), fromCents(tax[j]), fromCents(total[j]), part.unitCost, rxItem?.id ?? null],
+         cartInput[i].taxRate, fromCents(net[j]), fromCents(tax[j]), fromCents(total[j]), part.unitCost, rxItem?.id ?? null, l.unitsPer],
       );
       await applyMovement(tx, actor, {
         batchId: part.batchId, quantity: -part.quantity, type: 'sale',
@@ -366,7 +378,7 @@ export async function getSale(actor: Actor, id: number) {
   if (!can(actor, 'sales.view_all') && sale.cashier_id !== actor.userId) throw forbidden('You can only view your own sales.');
   const [items, payments, returns] = await Promise.all([
     pool.query(
-      `SELECT si.id, si.product_id, si.batch_id, si.quantity, si.quantity_returned, si.unit_price, si.discount_amount, si.tax_rate,
+      `SELECT si.id, si.product_id, si.batch_id, si.quantity, si.quantity_returned, si.unit_price, si.units_per_sale_unit, p.pack_size, si.discount_amount, si.tax_rate,
               si.net_amount, si.tax_amount, si.line_total, si.unit_cost, p.name AS product_name, p.sku, p.unit, p.strength,
               b.batch_number, b.expiry_date
          FROM sale_items si JOIN products p ON p.id = si.product_id JOIN product_batches b ON b.id = si.batch_id
@@ -432,10 +444,10 @@ export async function publicReceipt(token: string) {
   );
   if (!rows[0]) throw notFound('Receipt');
   const items = await pool.query(
-    `SELECT p.name AS product_name, p.strength, sum(si.quantity)::int AS quantity, si.unit_price, sum(si.discount_amount) AS discount_amount,
-            sum(si.line_total) AS line_total
+    `SELECT p.name AS product_name, p.strength, sum(si.quantity)::int AS quantity, si.unit_price, si.units_per_sale_unit,
+            sum(si.discount_amount) AS discount_amount, sum(si.line_total) AS line_total
        FROM sale_items si JOIN products p ON p.id = si.product_id WHERE si.sale_id = $1
-      GROUP BY p.id, p.name, p.strength, si.unit_price ORDER BY min(si.id)`,
+      GROUP BY p.id, p.name, p.strength, si.unit_price, si.units_per_sale_unit ORDER BY min(si.id)`,
     [rows[0].id],
   );
   const payments = await pool.query('SELECT method, amount FROM payments WHERE sale_id = $1 ORDER BY id', [rows[0].id]);

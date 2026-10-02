@@ -6,7 +6,9 @@ import {
 
 export const saleLineSchema = z.object({
   productId: id('Product'),
+  /** Number of selling units, or of whole packs when sellBy is 'pack'. */
   quantity: quantity(),
+  sellBy: z.enum(['unit', 'pack']).default('unit'),
   /** Optional manual batch choice; otherwise FEFO allocation. */
   batchId: optionalId,
   /** Line price override (permission-checked); defaults to the product price. */

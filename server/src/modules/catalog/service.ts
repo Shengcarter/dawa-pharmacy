@@ -148,7 +148,7 @@ const productColumns = (d: ProductUpdate) => [
   d.barcode, d.name, d.genericName, d.brandName, d.productType, d.categoryId, d.manufacturerId, d.defaultSupplierId,
   d.dosageForm, d.strength, d.unit, d.packSize, d.purchasePrice, d.sellingPrice, d.wholesalePrice, d.minSellingPrice,
   d.reorderLevel, d.maxStockLevel, d.requiresPrescription, d.isBatchTracked, d.taxRate, d.status, d.description,
-  d.storageInstructions,
+  d.storageInstructions, d.packSellingPrice,
 ];
 
 export async function createProduct(actor: Actor, d: ProductData) {
@@ -160,8 +160,8 @@ export async function createProduct(actor: Actor, d: ProductData) {
       `INSERT INTO products (sku, barcode, name, generic_name, brand_name, product_type, category_id, manufacturer_id, default_supplier_id,
                              dosage_form, strength, unit, pack_size, purchase_price, selling_price, wholesale_price, min_selling_price,
                              reorder_level, max_stock_level, requires_prescription, is_batch_tracked, tax_rate, status, description,
-                             storage_instructions, created_by, updated_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$26)
+                             storage_instructions, pack_selling_price, created_by, updated_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$27)
        RETURNING id`,
       [sku, ...productColumns(d), actor.userId],
     );
@@ -194,6 +194,7 @@ const PRICE_FIELDS = [
   ['selling_price', 'sellingPrice', 'selling price'],
   ['wholesale_price', 'wholesalePrice', 'wholesale price'],
   ['min_selling_price', 'minSellingPrice', 'minimum selling price'],
+  ['pack_selling_price', 'packSellingPrice', 'pack price'],
 ] as const;
 
 export async function updateProduct(actor: Actor, id: number, d: ProductUpdate & { sku: string | null }) {
@@ -217,8 +218,8 @@ export async function updateProduct(actor: Actor, id: number, d: ProductUpdate &
       `UPDATE products SET sku=$1, barcode=$2, name=$3, generic_name=$4, brand_name=$5, product_type=$6, category_id=$7, manufacturer_id=$8,
               default_supplier_id=$9, dosage_form=$10, strength=$11, unit=$12, pack_size=$13, purchase_price=$14, selling_price=$15,
               wholesale_price=$16, min_selling_price=$17, reorder_level=$18, max_stock_level=$19, requires_prescription=$20,
-              is_batch_tracked=$21, tax_rate=$22, status=$23, description=$24, storage_instructions=$25, updated_by=$26, updated_at=now()
-        WHERE id = $27`,
+              is_batch_tracked=$21, tax_rate=$22, status=$23, description=$24, storage_instructions=$25, pack_selling_price=$26, updated_by=$27, updated_at=now()
+        WHERE id = $28`,
       [sku, ...productColumns(d), actor.userId, id],
     );
     const cur = settings.general.currency;
@@ -310,6 +311,7 @@ export async function posSearch(actor: Actor, term: string, limit = 12) {
   }
   const { rows } = await pool.query(
     `SELECT p.id, p.sku, p.barcode, p.name, p.generic_name, p.strength, p.dosage_form, p.unit, p.selling_price, p.min_selling_price,
+            p.pack_size, p.pack_selling_price,
             p.tax_rate, p.requires_prescription, p.image_path,
             COALESCE(json_agg(json_build_object(
               'id', b.id, 'batchNumber', b.batch_number, 'expiryDate', b.expiry_date, 'quantity', b.quantity_on_hand,

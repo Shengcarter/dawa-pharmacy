@@ -148,7 +148,7 @@ async function main() {
       sku: p.sku, barcode, name: p.name, genericName: p.generic, brandName: p.brand, productType: p.type,
       categoryId: categoryIds.get(p.category), manufacturerId: manufacturerIds.get(p.manufacturer), defaultSupplierId: supplierIds[p.supplier],
       dosageForm: p.form, strength: p.strength, unit: p.unit, packSize: p.pack, purchasePrice: p.cost, sellingPrice: p.price,
-      wholesalePrice: Math.round((p.price * 0.85) / 50) * 50, minSellingPrice: p.min ?? null, reorderLevel: p.reorder,
+      wholesalePrice: Math.round((p.price * 0.85) / 50) * 50, packSellingPrice: p.packPrice ?? null, minSellingPrice: p.min ?? null, reorderLevel: p.reorder,
       maxStockLevel: p.max ?? null, requiresPrescription: Boolean(p.rx), isBatchTracked: p.tracked !== false, taxRate: p.tax ?? 0,
       status: 'active', description: null, storageInstructions: p.storage ?? 'Store below 30°C in a dry place, away from direct sunlight.',
     });
@@ -304,9 +304,13 @@ async function main() {
       const items = [...lines.entries()].map(([productId, quantity]) => {
         const p = products.find((x) => x.id === productId)!;
         const discount = discountAllowed ? Math.round((p.price * quantity * 0.05) / 50) * 50 : 0;
-        return { productId, quantity, batchId: null, unitPrice: null, discount };
+        const byPack = Boolean(p.packPrice) && rand() < 0.05;
+        return { productId, quantity: byPack ? 1 : quantity, sellBy: byPack ? 'pack' as const : 'unit' as const, batchId: null, unitPrice: null, discount: byPack ? 0 : discount };
       });
-      const preview = items.reduce((a, i) => a + products.find((p) => p.id === i.productId)!.price * i.quantity - i.discount, 0);
+      const preview = items.reduce((a, i) => {
+        const p = products.find((x) => x.id === i.productId)!;
+        return a + (i.sellBy === 'pack' ? p.packPrice! : p.price) * i.quantity - i.discount;
+      }, 0);
       const method = methodRoll < 0.55 ? 'cash' : methodRoll < 0.87 ? 'mobile_money' : 'card';
       const sale = await trySale(actor, {
         customerId: customer?.id ?? null, prescriptionId: null, items, cartDiscount: 0,
@@ -344,7 +348,7 @@ async function main() {
       });
       if (d <= 1 && r === 0) continue; // leave the newest prescriptions waiting at the counter
       const dispenseAt = new Date(when.getTime() + randInt(5, 25) * 60_000);
-      const saleItems = items.map((i) => ({ productId: i.productId, quantity: i.quantity, batchId: null, unitPrice: null, discount: 0 }));
+      const saleItems = items.map((i) => ({ productId: i.productId, quantity: i.quantity, sellBy: 'unit' as const, batchId: null, unitPrice: null, discount: 0 }));
       const total = saleItems.reduce((a, i) => a + products.find((p) => p.id === i.productId)!.price * i.quantity, 0);
       const sale = await trySale(as(pharmacist, dispenseAt), {
         customerId: patient.id, prescriptionId: rx.id, items: saleItems, cartDiscount: 0,

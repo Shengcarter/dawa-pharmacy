@@ -51,7 +51,7 @@ export function ProductFormPage() {
       sku: p.sku, barcode: empty(p.barcode), name: p.name, genericName: empty(p.genericName), brandName: empty(p.brandName),
       productType: p.productType, categoryId: empty(p.categoryId), manufacturerId: empty(p.manufacturerId), defaultSupplierId: empty(p.defaultSupplierId),
       dosageForm: empty(p.dosageForm), strength: empty(p.strength), unit: p.unit, packSize: p.packSize, purchasePrice: p.purchasePrice ?? 0,
-      sellingPrice: p.sellingPrice, wholesalePrice: empty(p.wholesalePrice), minSellingPrice: empty(p.minSellingPrice), reorderLevel: p.reorderLevel,
+      sellingPrice: p.sellingPrice, packSellingPrice: empty(p.packSellingPrice), wholesalePrice: empty(p.wholesalePrice), minSellingPrice: empty(p.minSellingPrice), reorderLevel: p.reorderLevel,
       maxStockLevel: empty(p.maxStockLevel), requiresPrescription: p.requiresPrescription, isBatchTracked: p.isBatchTracked, taxRate: p.taxRate,
       status: p.status, description: empty(p.description), storageInstructions: empty(p.storageInstructions),
     } as never);
@@ -151,6 +151,9 @@ export function ProductFormPage() {
             </Field>
             <Field label="Selling price" required error={errors.sellingPrice?.message} hint={margin !== null ? `Margin ${margin.toFixed(1)}%` : undefined}>
               {(id) => <Input id={id} {...num} prefix={currency} disabled={!canPrice} {...r('sellingPrice')} invalid={!!errors.sellingPrice} />}
+            </Field>
+            <Field label="Pack price" error={errors.packSellingPrice?.message} hint="Optional — price for a whole pack, so the till can sell either single units or the full pack.">
+              {(id) => <Input id={id} {...num} prefix={currency} disabled={!canPrice} {...r('packSellingPrice')} />}
             </Field>
             <Field label="Wholesale price" error={errors.wholesalePrice?.message}>{(id) => <Input id={id} {...num} prefix={currency} disabled={!canPrice} {...r('wholesalePrice')} />}</Field>
             <Field label="Minimum selling price" error={errors.minSellingPrice?.message} hint="Discounts cannot go below this without override permission.">

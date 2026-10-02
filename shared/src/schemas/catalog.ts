@@ -56,6 +56,7 @@ const productBase = z.object({
   packSize: z.coerce.number().int().min(1, 'Pack size must be at least 1').max(10000).default(1),
   purchasePrice: money('Purchase price'),
   sellingPrice: money('Selling price'),
+  packSellingPrice: money('Pack price').optional().nullable().or(z.literal('').transform(() => null)).transform((v) => v ?? null),
   wholesalePrice: money('Wholesale price').optional().nullable().or(z.literal('').transform(() => null)).transform((v) => v ?? null),
   minSellingPrice: money('Minimum selling price').optional().nullable().or(z.literal('').transform(() => null)).transform((v) => v ?? null),
   reorderLevel: nonNegativeInt('Reorder level'),
@@ -70,6 +71,8 @@ const productBase = z.object({
 
 function priceChecks<T extends z.infer<typeof productBase>>(d: T, ctx: z.RefinementCtx) {
   if (d.sellingPrice <= 0) ctx.addIssue({ code: 'custom', path: ['sellingPrice'], message: 'Selling price must be greater than zero' });
+  if (d.packSellingPrice !== null && d.packSize < 2)
+    ctx.addIssue({ code: 'custom', path: ['packSellingPrice'], message: 'Set units per pack (2 or more) to sell whole packs' });
   if (d.minSellingPrice !== null && d.minSellingPrice > d.sellingPrice)
     ctx.addIssue({ code: 'custom', path: ['minSellingPrice'], message: 'Minimum price cannot exceed the selling price' });
   if (d.maxStockLevel !== null && d.maxStockLevel > 0 && d.maxStockLevel < d.reorderLevel)

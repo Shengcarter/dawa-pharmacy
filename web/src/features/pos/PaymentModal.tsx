@@ -91,7 +91,7 @@ export function PaymentModal({ open, onClose, cart, cartDiscount, totalCents, cu
       api.post<PaymentResult>('/sales', {
         customerId: customer?.id ?? null,
         prescriptionId,
-        items: cart.map((l) => ({ productId: l.product.id, quantity: l.quantity, batchId: l.batchId, discount: l.discount })),
+        items: cart.map((l) => ({ productId: l.product.id, quantity: l.quantity, sellBy: l.sellBy, batchId: l.batchId, discount: l.discount })),
         cartDiscount,
         payments,
         cashTendered: cashCents > 0 && tendered ? Number(tendered) : null,

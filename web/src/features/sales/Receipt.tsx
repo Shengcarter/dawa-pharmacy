@@ -32,7 +32,7 @@ export interface ReceiptSale {
   cashTendered: number | null;
   changeGiven: number | null;
   rxNumber?: string | null;
-  items: { productName: string; strength?: string | null; quantity: number; unitPrice: number; discountAmount: number; lineTotal: number; batchNumber?: string; expiryDate?: string | null }[];
+  items: { productName: string; strength?: string | null; quantity: number; unitsPerSaleUnit?: number; unitPrice: number; discountAmount: number; lineTotal: number; batchNumber?: string; expiryDate?: string | null }[];
   payments: { method: string; amount: number }[];
 }
 
@@ -40,7 +40,7 @@ export interface ReceiptSale {
 function mergeLines(items: ReceiptSale['items']) {
   const map = new Map<string, ReceiptSale['items'][number]>();
   for (const i of items) {
-    const key = `${i.productName}|${i.unitPrice}`;
+    const key = `${i.productName}|${i.unitPrice}|${i.unitsPerSaleUnit ?? 1}`;
     const prev = map.get(key);
     if (prev) map.set(key, { ...prev, quantity: prev.quantity + i.quantity, discountAmount: prev.discountAmount + i.discountAmount, lineTotal: prev.lineTotal + i.lineTotal });
     else map.set(key, { ...i });
@@ -103,7 +103,7 @@ export function Receipt({ sale, pharmacy, paper = pharmacy.paper, className }: {
           {lines.map((l, i) => (
             <div key={i} className="mb-1">
               <p className="break-words">{l.productName}</p>
-              <Row label={`  ${l.quantity} × ${m(l.unitPrice)}${l.discountAmount > 0 ? ` (−${m(l.discountAmount)})` : ''}`} value={m(l.lineTotal)} />
+              <Row label={`  ${soldQty(l)} × ${m(l.unitPrice)}${l.discountAmount > 0 ? ` (−${m(l.discountAmount)})` : ''}`} value={m(l.lineTotal)} />
             </div>
           ))}
         </div>
@@ -151,7 +151,7 @@ export function Receipt({ sale, pharmacy, paper = pharmacy.paper, className }: {
           {lines.map((l, i) => (
             <tr key={i} className="border-b border-black/10">
               <td className="py-1.5">{l.productName}</td>
-              <td className="py-1.5 text-right">{l.quantity}</td>
+              <td className="py-1.5 text-right">{soldQty(l)}</td>
               <td className="py-1.5 text-right">{m(l.unitPrice)}</td>
               <td className="py-1.5 text-right">{l.discountAmount > 0 ? m(l.discountAmount) : '—'}</td>
               <td className="py-1.5 text-right">{m(l.lineTotal)}</td>
@@ -164,6 +164,12 @@ export function Receipt({ sale, pharmacy, paper = pharmacy.paper, className }: {
       <p className="mt-1 text-center text-[10px] text-black/50">Amounts in {formatMoney(0, cur).split(' ')[0]}</p>
     </div>
   );
+}
+
+/** "2 packs of 10" for pack sales, otherwise the unit count. */
+function soldQty(l: { quantity: number; unitsPerSaleUnit?: number }) {
+  const per = l.unitsPerSaleUnit ?? 1;
+  return per > 1 ? `${l.quantity / per} pack${l.quantity / per === 1 ? '' : 's'} of ${per}` : String(l.quantity);
 }
 
 function Row({ label, value, strong }: { label: string; value: string; strong?: boolean }) {

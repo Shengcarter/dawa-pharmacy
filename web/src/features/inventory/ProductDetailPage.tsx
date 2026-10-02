@@ -19,7 +19,7 @@ import { AdjustStockModal, EditBatchModal, type BatchLite } from './StockModals'
 interface ProductDetail {
   id: number; sku: string; barcode: string | null; name: string; genericName: string | null; brandName: string | null; productType: string;
   categoryName: string | null; manufacturerName: string | null; supplierName: string | null; dosageForm: string | null; strength: string | null;
-  unit: string; packSize: number; purchasePrice?: number; sellingPrice: number; wholesalePrice: number | null; minSellingPrice: number | null;
+  unit: string; packSize: number; packSellingPrice: number | null; purchasePrice?: number; sellingPrice: number; wholesalePrice: number | null; minSellingPrice: number | null;
   reorderLevel: number; maxStockLevel: number | null; requiresPrescription: boolean; isBatchTracked: boolean; taxRate: number; status: string;
   imagePath: string | null; description: string | null; storageInstructions: string | null; createdAt: string; updatedAt: string;
   createdByName: string | null; updatedByName: string | null; onHand: number; sellable: number; stockValue?: number; nearestExpiry: string | null;
@@ -191,6 +191,7 @@ export function ProductDetailPage() {
                   { label: 'Default supplier', value: p.supplierName },
                   { label: 'Unit / pack', value: `${p.unit} · ${p.packSize} per pack` },
                   { label: 'Purchase price', value: p.purchasePrice !== undefined ? money(p.purchasePrice) : null, hidden: p.purchasePrice === undefined },
+                  { label: 'Pack price', value: p.packSellingPrice ? `${money(p.packSellingPrice)} per ${p.packSize}` : null },
                   { label: 'Wholesale price', value: p.wholesalePrice ? money(p.wholesalePrice) : null },
                   { label: 'Minimum price', value: p.minSellingPrice ? money(p.minSellingPrice) : null },
                   { label: 'VAT', value: p.taxRate > 0 ? `${p.taxRate}%` : 'Exempt' },

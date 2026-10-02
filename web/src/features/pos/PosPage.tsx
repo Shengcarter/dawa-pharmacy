@@ -23,7 +23,18 @@ export interface CartLine {
   batchId: number | null;
   /** Line discount in currency units. */
   discount: number;
+  /** 'pack' sells whole packs at the pack price; quantity then counts packs. */
+  sellBy: 'unit' | 'pack';
   prescriptionItemId?: number;
+}
+
+/** Price per sold unit and the most that can be sold, for the line's selling mode. */
+export function lineMode(l: CartLine) {
+  const pack = l.sellBy === 'pack';
+  return {
+    price: pack ? l.product.packSellingPrice ?? l.product.sellingPrice : l.product.sellingPrice,
+    max: pack ? Math.floor(l.product.sellable / l.product.packSize) : l.product.sellable,
+  };
 }
 
 /** Keyboard-wedge barcode scanners type fast and finish with Enter. */
@@ -86,7 +97,7 @@ export function PosPage() {
   const canOverride = can('pos.discount_override');
 
   const totals = useMemo(
-    () => computeCart(cart.map((l) => ({ quantity: l.quantity, unitPriceCents: toCents(l.product.sellingPrice), discountCents: toCents(l.discount), taxRate: Number(l.product.taxRate) })), toCents(cartDiscount), taxInclusive),
+    () => computeCart(cart.map((l) => ({ quantity: l.quantity, unitPriceCents: toCents(lineMode(l).price), discountCents: toCents(l.discount), taxRate: Number(l.product.taxRate) })), toCents(cartDiscount), taxInclusive),
     [cart, cartDiscount, taxInclusive],
   );
 
@@ -97,9 +108,9 @@ export function PosPage() {
         return;
       }
       setCart((lines) => {
-        const existing = lines.find((l) => l.product.id === product.id && l.batchId === null);
+        const existing = lines.find((l) => l.product.id === product.id && l.batchId === null && l.sellBy === 'unit');
         if (existing) return lines.map((l) => (l === existing ? { ...l, quantity: Math.min(l.quantity + quantity, product.sellable) } : l));
-        return [...lines, { key: `${product.id}-${Date.now()}`, product, quantity: Math.min(quantity, product.sellable), batchId: null, discount: 0 }];
+        return [...lines, { key: `${product.id}-${Date.now()}`, product, quantity: Math.min(quantity, product.sellable), batchId: null, discount: 0, sellBy: 'unit' }];
       });
       setTerm('');
       searchRef.current?.focus();
@@ -142,6 +153,7 @@ export function PosPage() {
           quantity: Math.min(i.quantity, i.quantityRemaining, i.product.sellable),
           batchId: null,
           discount: 0,
+          sellBy: 'unit' as const,
           prescriptionItemId: i.id,
         })),
     );
@@ -339,16 +351,31 @@ export function PosPage() {
                           inputMode="numeric"
                           value={l.quantity}
                           onChange={(e) => {
-                            const n = Math.max(1, Math.min(Number(e.target.value.replace(/\D/g, '')) || 1, l.product.sellable));
+                            const n = Math.max(1, Math.min(Number(e.target.value.replace(/\D/g, '')) || 1, lineMode(l).max));
                             update(l.key, { quantity: n });
                           }}
                           className="h-7 w-11 border-x border-line text-center text-[13px] num focus:outline-none"
                         />
-                        <button aria-label="Increase" className="flex size-7 items-center justify-center text-muted hover:text-fg disabled:opacity-40" disabled={l.quantity >= l.product.sellable} onClick={() => update(l.key, { quantity: l.quantity + 1 })}>
+                        <button aria-label="Increase" className="flex size-7 items-center justify-center text-muted hover:text-fg disabled:opacity-40" disabled={l.quantity >= lineMode(l).max} onClick={() => update(l.key, { quantity: l.quantity + 1 })}>
                           <Plus className="size-3.5" />
                         </button>
                       </div>
-                      <span className="text-[12px] text-muted num">× {amount(l.product.sellingPrice)}</span>
+                      <span className="text-[12px] text-muted num">× {amount(lineMode(l).price)}</span>
+                      {l.product.packSellingPrice && l.product.packSize > 1 && !l.prescriptionItemId && (
+                        <div role="group" aria-label="Sell by" className="flex rounded-md border border-line p-0.5 text-[11.5px]">
+                          {(['unit', 'pack'] as const).map((mode) => (
+                            <button
+                              key={mode}
+                              aria-pressed={l.sellBy === mode}
+                              disabled={mode === 'pack' && l.product.sellable < l.product.packSize}
+                              onClick={() => update(l.key, { sellBy: mode, quantity: 1, discount: 0 })}
+                              className={cn('rounded px-1.5 py-0.5 font-medium disabled:opacity-40', l.sellBy === mode ? 'bg-brand-50 text-brand-700' : 'text-muted hover:text-fg')}
+                            >
+                              {mode === 'unit' ? l.product.unit : `pack of ${l.product.packSize}`}
+                            </button>
+                          ))}
+                        </div>
+                      )}
                       <span className="ml-auto text-[13.5px] font-semibold num">{amount(fromCents(t.totalCents))}</span>
                     </div>
                     {canDiscount && (

@@ -14,7 +14,7 @@ import { ReceiptModal } from './ReceiptModal';
 
 interface SaleItem {
   id: number; productId: number; batchId: number; quantity: number; quantityReturned: number; unitPrice: number; discountAmount: number;
-  taxRate: number; netAmount: number; taxAmount: number; lineTotal: number; unitCost?: number; productName: string; sku: string;
+  taxRate: number; netAmount: number; taxAmount: number; lineTotal: number; unitCost?: number; productName: string; sku: string; unitsPerSaleUnit: number;
   unit: string; batchNumber: string; expiryDate: string | null;
 }
 export interface SaleDetail {
@@ -81,7 +81,7 @@ export function SaleDetailPage() {
                         {showCost && i.unitCost !== undefined && <p className="text-[11.5px] text-muted num">Cost {amount(i.unitCost)} / {i.unit}</p>}
                       </td>
                       <td className="px-3 py-2.5 text-muted max-md:hidden">{i.batchNumber}{i.expiryDate && <span className="block text-[11.5px]">exp {date(i.expiryDate)}</span>}</td>
-                      <td className="px-3 py-2.5 text-right num">{i.quantity}</td>
+                      <td className="px-3 py-2.5 text-right num">{i.unitsPerSaleUnit > 1 ? <>{i.quantity / i.unitsPerSaleUnit} × pack<span className="block text-[11.5px] text-muted">{i.quantity} {i.unit}</span></> : i.quantity}</td>
                       <td className="px-3 py-2.5 text-right num">{amount(i.unitPrice)}</td>
                       <td className="px-3 py-2.5 text-right num max-sm:hidden">{i.discountAmount > 0 ? amount(i.discountAmount) : '—'}</td>
                       <td className="px-4 py-2.5 text-right font-medium num">{amount(i.lineTotal)}</td>

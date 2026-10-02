@@ -149,4 +149,20 @@ describe('POS sales, FEFO and stock rules', () => {
     expect(JSON.stringify(res.body)).not.toContain('+2556');
     expect(res.body.sale.items[0].quantity).toBe(1);
   });
+
+  it('sells whole packs at the pack price and takes pack-size units from stock', async () => {
+    const productId = await makeProduct(admin, { packSize: 10, packSellingPrice: 90000 });
+    const batchId = await receive(admin, supplierId, productId, `PK-${productId}`, 25, addDays(today(), 300));
+    const sale = await admin.post('/api/sales', {
+      items: [{ productId, quantity: 2, sellBy: 'pack' }, { productId, quantity: 3 }],
+      payments: [{ method: 'cash', amount: 210000 }],
+    });
+    expect(sale.status).toBe(201);
+    expect(await batchQty(batchId)).toBe(2);
+    const lines = (await pool.query('SELECT quantity, unit_price, units_per_sale_unit, line_total FROM sale_items WHERE sale_id = $1 ORDER BY units_per_sale_unit DESC', [sale.body.id])).rows;
+    expect(lines.map((l) => [l.quantity, Number(l.unit_price), l.units_per_sale_unit, Number(l.line_total)])).toEqual([[20, 90000, 10, 180000], [3, 10000, 1, 30000]]);
+    const plain = await makeProduct(admin);
+    await receive(admin, supplierId, plain, `NP-${plain}`, 20, addDays(today(), 300));
+    expect((await cashSale(admin, [{ productId: plain, quantity: 1 }], 10000, { items: [{ productId: plain, quantity: 1, sellBy: 'pack' }] })).status).toBe(422);
+  });
 });

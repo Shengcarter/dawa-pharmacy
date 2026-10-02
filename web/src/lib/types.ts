@@ -79,6 +79,8 @@ export interface PosProduct {
   unit: string;
   sellingPrice: number;
   minSellingPrice: number | null;
+  packSize: number;
+  packSellingPrice: number | null;
   taxRate: number;
   requiresPrescription: boolean;
   imagePath: string | null;
