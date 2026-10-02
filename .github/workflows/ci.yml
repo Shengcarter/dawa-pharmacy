@@ -27,7 +27,7 @@ jobs:
     env:
       TEST_DATABASE_URL: postgres://dawa:dawa_ci_pw@localhost:5432/dawa_test
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -40,7 +40,7 @@ jobs:
   security:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0 # scan the whole history, not just the latest commit
       - uses: actions/setup-node@v4
