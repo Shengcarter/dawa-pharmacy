@@ -6,6 +6,7 @@ import { env } from '../../config/env';
 import { actorOf, authenticate, clientIp, requireClientHeader } from '../../middleware/auth';
 import { loginLimiter, passwordResetLimiter } from '../../middleware/rateLimit';
 import { mailEnabled } from '../../lib/mailer';
+import { logger } from '../../lib/logger';
 import * as auth from './service';
 
 const COOKIE = 'dawa_rt';
@@ -57,7 +58,9 @@ authRouter.post('/logout', requireClientHeader, async (req, res) => {
 
 authRouter.post('/forgot-password', passwordResetLimiter, async (req, res) => {
   const { email } = forgotPasswordSchema.parse(req.body);
-  await auth.requestPasswordReset(email, client(req));
+  // Runs in the background so the answer (and its timing) is the same whether
+  // or not the email has an account, and an SMTP outage is logged, not shown.
+  void auth.requestPasswordReset(email, client(req)).catch((err) => logger.error({ err }, 'Password reset email failed'));
   res.json({
     message: mailEnabled
       ? 'If that email belongs to an active account, a reset link is on its way.'

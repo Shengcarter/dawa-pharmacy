@@ -14,8 +14,10 @@ export function LoginPage() {
   const location = useLocation();
   const [error, setError] = useState<string | null>(null);
   const [show, setShow] = useState(false);
-  const form = useZodForm(loginSchema, { defaultValues: { email: '', password: '' } });
-  const from = (location.state as { from?: string } | null)?.from ?? '/';
+  // Validate on submit: an on-blur error would shift "Forgot password?" away from the pointer mid-click.
+  const form = useZodForm(loginSchema, { defaultValues: { email: '', password: '' }, mode: 'onSubmit' });
+  const state = location.state as { from?: string; notice?: string } | null;
+  const from = state?.from ?? '/';
 
   if (status === 'signed-in') return <Navigate to={from} replace />;
 
@@ -33,7 +35,7 @@ export function LoginPage() {
   return (
     <AuthShell title="Sign in" subtitle="Use the email and password your manager set up for you.">
       <form onSubmit={submit} className="space-y-4" noValidate>
-        {error && <Alert tone="danger">{error}</Alert>}
+        {error ? <Alert tone="danger">{error}</Alert> : state?.notice && <Alert tone="success">{state.notice}</Alert>}
         <Field label="Email" error={errors.email?.message}>
           {(id) => <Input id={id} type="email" autoComplete="username" autoFocus placeholder="name@pharmacy.co.tz" invalid={!!errors.email} {...form.register('email')} />}
         </Field>

@@ -49,7 +49,7 @@ export function ResetPasswordPage() {
     setError(null);
     try {
       await api.post('/auth/reset-password', data);
-      navigate('/login', { replace: true });
+      navigate('/login', { replace: true, state: { notice: 'Password updated. Sign in with your new password.' } });
     } catch (e) {
       setError(applyServerErrors(form, e));
     }

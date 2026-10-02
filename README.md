@@ -151,6 +151,25 @@ Business settings (pharmacy details, currency, time zone, stock and tax rules, r
 backups) are edited in **Settings** and stored in the database. Currency formatting is centralised in
 `shared/src/currency.ts`; adding a currency is one entry in `CURRENCIES`.
 
+### Email (password-reset links)
+
+Set these in `.env` and restart the app. Any SMTP provider works; for example:
+
+| Provider | `SMTP_HOST` | `SMTP_PORT` | `SMTP_USER` / `SMTP_PASSWORD` |
+| --- | --- | --- | --- |
+| Gmail / Google Workspace | `smtp.gmail.com` | `587` | the address, and an [app password](https://myaccount.google.com/apppasswords) (not the normal password) |
+| Zoho Mail | `smtp.zoho.com` | `465` | the address and its password (or an app-specific password with 2FA) |
+| Mailgun, Brevo, SendGrid… | from the provider | `587` | the SMTP credentials the provider gives you |
+
+`SMTP_FROM` is the sender shown to staff, e.g. `Upendo Pharmacy <no-reply@upendopharmacy.co.tz>`; most providers
+only accept an address you own. Port 465 uses TLS from the start; other ports upgrade with STARTTLS.
+`APP_URL` must be the address staff open the system on, because the reset link is built from it.
+
+Then open **Settings → System & backups → Outgoing email → Send test email**. It sends to your own address and
+shows the mail server's exact error if it is refused. Reset requests are answered the same way whether or not the
+email has an account (and are rate-limited), and a failed send is logged on the server rather than shown on the
+sign-in page.
+
 ## Architecture
 
 ```
@@ -298,5 +317,5 @@ pg_restore --clean --if-exists --no-owner -d "$DATABASE_URL" dawa-YYYYMMDD-HHMMS
   Reports and the dashboard show the signed-in user's branch (supplier balances are company-wide).
 * A product sells in its base unit or as a whole pack at one optional pack price; there are no tiered,
   quantity-break or per-customer price lists.
-* Password-reset emails need SMTP settings; without them a manager resets passwords from *Employees & users*.
+* Password-reset emails need SMTP settings (see *Email*); without them a manager resets passwords from *Employees & users*.
 * Electronic fiscal device (TRA EFD/VFD) integration is not included; receipts are not fiscal receipts.

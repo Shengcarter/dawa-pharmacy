@@ -85,6 +85,31 @@ describe('authentication', () => {
     expect((await login(u.email, 'ResetPassword9')).status).toBe(200);
   });
 
+  it('answers forgot-password identically for unknown and existing accounts', async () => {
+    const u = await userWithRole('cashier');
+    const ask = (email: string) => request(app).post('/api/auth/forgot-password').set('x-dawa-client', 'web').send({ email });
+    const [known, unknown] = [await ask(u.email), await ask('nobody-here@example.com')];
+    expect(known.status).toBe(200);
+    expect(unknown.status).toBe(200);
+    expect(known.body).toEqual(unknown.body);
+    // The token is issued in the background.
+    let issued = 0;
+    for (let i = 0; i < 20 && !issued; i++) {
+      issued = (await pool.query('SELECT count(*)::int AS n FROM password_resets WHERE user_id = $1', [u.userId])).rows[0].n;
+      if (!issued) await new Promise((r) => setTimeout(r, 50));
+    }
+    expect(issued).toBe(1);
+  });
+
+  it('lets only settings managers send a test email, and explains when SMTP is not set up', async () => {
+    const cashier = await userWithRole('cashier');
+    expect((await cashier.post('/api/settings/test-email', {})).status).toBe(403);
+    const admin = await userWithRole('super_admin');
+    const res = await admin.post('/api/settings/test-email', {});
+    expect(res.status).toBe(400);
+    expect(res.body.error.message).toMatch(/SMTP_HOST/);
+  });
+
   it('suspending a user signs them out', async () => {
     const admin = await userWithRole('super_admin');
     const u = await userWithRole('cashier');

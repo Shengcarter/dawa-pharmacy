@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Controller } from 'react-hook-form';
-import { Database, Download, Plus } from 'lucide-react';
+import { Database, Download, Mail, Plus } from 'lucide-react';
 import {
   generalSettingsSchema, inventorySettingsSchema, notificationSettingsSchema, salesSettingsSchema, systemSettingsSchema, type SettingsSection,
 } from '@dawa/shared';
@@ -220,6 +220,11 @@ function SystemSection({ settings }: { settings: AppSettings }) {
     onSuccess: (r) => { qc.invalidateQueries({ queryKey: ['backups'] }); toast.success('Backup created', r.name); },
     onError: (e) => toast.error('Backup failed', (e as Error).message),
   });
+  const testEmail = useMutation({
+    mutationFn: () => api.post<{ sentTo: string }>('/settings/test-email'),
+    onSuccess: (r) => toast.success('Test email sent', `Check the inbox of ${r.sentTo}.`),
+    onError: (e) => toast.error('Test email failed', (e as Error).message),
+  });
   return (
     <div className="space-y-4">
       <SectionCard title="Security & retention" onSave={submit} saving={save.isPending} error={error} readOnly={readOnly}>
@@ -232,6 +237,12 @@ function SystemSection({ settings }: { settings: AppSettings }) {
           <Switch checked={Boolean(field.value)} onChange={field.onChange} disabled={readOnly} label="Automatic daily backup" description="The server keeps a full database backup every 24 hours. Copy backups off this computer regularly." />
         )} />
       </SectionCard>
+      <Card title="Outgoing email" description="Used for password-reset links. Configured on the server with the SMTP_* environment variables."
+        actions={!readOnly && settings.meta.emailEnabled && <Button size="sm" icon={<Mail className="size-3.5" />} loading={testEmail.isPending} onClick={() => testEmail.mutate()}>Send test email</Button>}>
+        {settings.meta.emailEnabled
+          ? <Alert tone="success" title="Email is configured">Staff can reset a forgotten password from the sign-in page. Send a test email to confirm the mail server accepts messages.</Alert>
+          : <Alert tone="info" title="Email is not configured">Staff who forget their password need a manager to reset it from Employees &amp; users. To enable reset links, set SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD and SMTP_FROM in the server&rsquo;s .env file and restart it.</Alert>}
+      </Card>
       {can('backups.manage') && (
         <Card title="Database backups" description="Full PostgreSQL backups. Restore with: pg_restore --clean --if-exists -d <database> <file>"
           actions={<Button variant="primary" size="sm" icon={<Plus className="size-3.5" />} loading={create.isPending} onClick={() => create.mutate()}>Back up now</Button>} flush>
