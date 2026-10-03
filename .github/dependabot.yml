@@ -6,6 +6,10 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
+    ignore:
+      # Type definitions follow the Node.js version the app runs on (22), not the newest Node.
+      - dependency-name: '@types/node'
+        update-types: ['version-update:semver-major']
     groups:
       minor-and-patch:
         update-types: [minor, patch]

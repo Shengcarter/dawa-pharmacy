@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from 'react';
+import { Fragment, useMemo, useState, type ReactNode } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { Printer } from 'lucide-react';
@@ -332,7 +332,7 @@ function ProfitLossReport({ data }: { data: PL }) {
             </p>
           ) : null}
           {data.claimWriteOffs > 0 && row(`Insurance claims written off (${data.claimWriteOffCount})`, data.claimWriteOffs, { indent: true, negative: true })}
-          {data.expensesByCategory.map((e) => row(e.category, Number(e.amount), { indent: true, negative: true }))}
+          {data.expensesByCategory.map((e) => <Fragment key={e.category}>{row(e.category, Number(e.amount), { indent: true, negative: true })}</Fragment>)}
           {row('Total operating expenses', data.operatingExpenses, { muted: true, negative: true })}
           {row('Net profit', data.netProfit, { strong: true, top: true })}
           <p className="mt-3 border-t border-line pt-2.5 text-[12px] text-muted">VAT collected ({money(data.taxCollected)}) is owed to TRA and is not revenue. Discounts given: {money(data.discounts)} (already deducted from sales).{data.claimWriteOffs > 0 && ' Claim write-offs are shown at the amount the insurer did not pay.'}</p>
