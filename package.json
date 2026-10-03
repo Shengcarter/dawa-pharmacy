@@ -2,16 +2,25 @@
   "name": "dawa-pharmacy",
   "version": "1.0.0",
   "private": true,
-  "description": "Dawa — pharmacy management system (POS, inventory, batches, purchasing, prescriptions, finance)",
-  "workspaces": ["shared", "server", "web"],
-  "engines": { "node": ">=20.0.0" },
+  "description": "Dawa \u2014 pharmacy management system (POS, inventory, batches, purchasing, prescriptions, finance)",
+  "workspaces": [
+    "shared",
+    "server",
+    "web"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "scripts": {
-    "dev": "npm run dev -w server & npm run dev -w web",
+    "dev": "concurrently -k -n api,web -c green,blue \"npm run dev -w server\" \"npm run dev -w web\"",
     "build": "npm run build -w server && npm run build -w web",
     "start": "npm run start -w server",
     "typecheck": "npm run typecheck -w shared && npm run typecheck -w server && npm run typecheck -w web",
     "test": "npm run test -w server",
     "db:migrate": "npm run migrate -w server",
     "db:seed": "npm run seed -w server"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.4"
   }
 }

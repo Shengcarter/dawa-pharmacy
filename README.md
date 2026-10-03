@@ -52,6 +52,8 @@ Built with TypeScript end to end: **React 19 + Vite + Tailwind CSS 4** on the fr
 
 ## Quick start (development)
 
+**Testing on a Windows or Mac laptop?** Follow the step-by-step guide in [docs/LAPTOP_SETUP.md](docs/LAPTOP_SETUP.md).
+
 Requirements: **Node.js 20+** (22 recommended) and **PostgreSQL 14+** (16 recommended).
 
 ```bash
