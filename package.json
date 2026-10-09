@@ -21,6 +21,6 @@
     "db:seed": "npm run seed -w server"
   },
   "devDependencies": {
-    "concurrently": "^9.2.4"
+    "concurrently": "^10.0.5"
   }
 }
